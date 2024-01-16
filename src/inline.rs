@@ -15,6 +15,7 @@ use crate::{
     Equivalent,
 };
 
+#[derive(Clone)]
 pub struct Inline<const N: usize, K, V, S> {
     raw: RawInline<N, (K, V)>,
     // Option is for take, S always exists before drop.
@@ -27,7 +28,25 @@ struct RawInline<const N: usize, T> {
     data: [MaybeUninit<T>; N],
 }
 
+impl<const N: usize, T: Clone> Clone for RawInline<N, T> {
+    #[inline]
+    fn clone(&self) -> Self {
+        let mut data = unsafe { MaybeUninit::<[MaybeUninit<T>; N]>::uninit().assume_init() };
+        for (idx, d) in self.data.iter().take(self.len).enumerate() {
+            unsafe {
+                data[idx] = MaybeUninit::new(d.assume_init_ref().clone());
+            }
+        }
+        Self {
+            aligned_groups: self.aligned_groups,
+            len: self.len,
+            data,
+        }
+    }
+}
+
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub(crate) struct AlignedGroups<const N: usize> {
     groups: [u8; N],
     _align: [Group; 0],

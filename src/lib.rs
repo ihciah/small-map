@@ -5,7 +5,10 @@ use core::{
     hint::unreachable_unchecked,
     iter::FusedIterator,
 };
-use std::collections::hash_map::RandomState;
+use std::{
+    collections::hash_map::RandomState,
+    fmt::{self, Debug},
+};
 
 use hashbrown::HashMap;
 use inline::Inline;
@@ -27,9 +30,20 @@ pub type FxSmallMap<const N: usize, K, V> =
 pub type ASmallMap<const N: usize, K, V> =
     SmallMap<N, K, V, core::hash::BuildHasherDefault<ahash::AHasher>>;
 
+#[derive(Clone)]
 pub enum SmallMap<const N: usize, K, V, S = RandomState> {
     Heap(HashMap<K, V, S>),
     Inline(Inline<N, K, V, S>),
+}
+
+impl<const N: usize, K, V, S> Debug for SmallMap<N, K, V, S>
+where
+    K: Debug,
+    V: Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_map().entries(self.iter()).finish()
+    }
 }
 
 impl<const N: usize, K, V, S: Default> Default for SmallMap<N, K, V, S> {

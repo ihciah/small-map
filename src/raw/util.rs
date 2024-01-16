@@ -43,6 +43,7 @@ where
     use core::hash::Hasher;
     let mut state = hash_builder.build_hasher();
     val.hash(&mut state);
+    #[allow(clippy::manual_hash_one)]
     state.finish()
 }
 
