@@ -102,10 +102,10 @@ impl<T> Bucket<T> {
             // (see TableLayout::calculate_layout_for method)
             invalid_mut(index + 1)
         } else {
-            base.as_ptr().add(index)
+            unsafe { base.as_ptr().add(index) }
         };
         Self {
-            ptr: NonNull::new_unchecked(ptr),
+            ptr: unsafe { NonNull::new_unchecked(ptr) },
         }
     }
 
@@ -119,7 +119,7 @@ impl<T> Bucket<T> {
             // this can not be UB
             self.ptr.as_ptr() as usize - 1
         } else {
-            self.ptr.as_ptr().offset_from(base.as_ptr()) as usize
+            unsafe { self.ptr.as_ptr().offset_from(base.as_ptr()) as usize }
         }
     }
 
@@ -138,33 +138,33 @@ impl<T> Bucket<T> {
     /// Executes the destructor (if any) of the pointed-to `data`.
     #[inline]
     pub(crate) unsafe fn drop(&self) {
-        self.as_ptr().drop_in_place();
+        unsafe { self.as_ptr().drop_in_place(); }
     }
 
     /// Reads the `value` from `self` without moving it. This leaves the
     /// memory in `self` unchanged.
     #[inline]
     pub(crate) unsafe fn read(&self) -> T {
-        self.as_ptr().read()
+        unsafe { self.as_ptr().read() }
     }
 
     /// Overwrites a memory location with the given `value` without reading
     /// or dropping the old value (like [`ptr::write`] function).
     #[inline]
     pub(crate) unsafe fn write(&self, val: T) {
-        self.as_ptr().write(val);
+        unsafe { self.as_ptr().write(val); }
     }
 
     /// Returns a shared immutable reference to the `value`.
     #[inline]
     pub(crate) unsafe fn as_ref<'a>(&self) -> &'a T {
-        &*self.as_ptr()
+        unsafe { &*self.as_ptr() }
     }
 
     /// Returns a unique mutable reference to the `value`.
     #[inline]
     pub(crate) unsafe fn as_mut<'a>(&self) -> &'a mut T {
-        &mut *self.as_ptr()
+        unsafe { &mut *self.as_ptr() }
     }
 
     /// Create a new [`Bucket`] that is offset from the `self` by the given
@@ -177,10 +177,10 @@ impl<T> Bucket<T> {
             // invalid pointer is good enough for ZST
             invalid_mut(self.ptr.as_ptr() as usize)
         } else {
-            self.ptr.as_ptr().add(offset)
+            unsafe { self.ptr.as_ptr().add(offset) }
         };
         Self {
-            ptr: NonNull::new_unchecked(ptr),
+            ptr: unsafe { NonNull::new_unchecked(ptr) },
         }
     }
 }

@@ -503,7 +503,7 @@ mod tests {
         }
         impl Operation {
             fn random() -> Self {
-                let mut rng = rand::thread_rng();
+                let mut rng = rand::rng();
 
                 let choice: u8 = rng.random();
                 match choice % 4 {
