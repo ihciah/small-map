@@ -254,6 +254,42 @@ where
     }
 }
 
+impl<const N: usize, K, V, S> SmallMap<N, K, V, S>
+where
+    S: Clone,
+{
+    /// Clears the map.
+    ///
+    /// This method clears the map as resets it to the Inline state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use small_map::SmallMap;
+    ///
+    /// let mut map: SmallMap<8, i32, ()> = SmallMap::new();
+    /// for i in 0..16 {
+    ///     map.insert(i, ());
+    /// }
+    /// assert!(!map.is_inline());
+    /// assert_eq!(map.len(), 16);
+    /// 
+    /// map.clear();
+    /// assert!(map.is_inline());
+    /// assert_eq!(map.len(), 0);
+    /// ```
+    #[inline]
+    pub fn clear(&mut self) {
+        let hash_builder = match self {
+            // Too bad there's no HashMap::take_hasher()
+            SmallMap::Heap(inner) => inner.hasher().clone(),
+            // Safety: We're about to destroy this inner, so it doesn't need its hasher
+            SmallMap::Inline(inner) => unsafe { inner.take_hasher() },
+        };
+        *self = Self::Inline(Inline::new(hash_builder))
+    }
+}
+
 pub enum Iter<'a, const N: usize, K, V> {
     Heap(hashbrown::hash_map::Iter<'a, K, V>),
     Inline(inline::Iter<'a, N, K, V>),
@@ -408,6 +444,14 @@ mod tests {
         assert_eq!(map.remove("hello2").unwrap(), "world2".to_string());
         assert_eq!(map.len(), 0);
         assert!(map.get("hello").is_none());
+
+        map.insert("hello3".to_string(), "world3".to_string());
+        map.insert("hello4".to_string(), "world4".to_string());
+        assert_eq!(map.len(), 2);
+        map.clear();
+        assert_eq!(map.len(), 0);
+        assert!(map.get("hello3").is_none());
+        assert!(map.get("hello4").is_none());
     }
 
     #[test]
@@ -428,6 +472,17 @@ mod tests {
         for i in 0..64 {
             assert_eq!(*map.get(&i).unwrap(), i * 2);
         }
+    }
+
+    #[test]
+    fn clear_to_inline() {
+        let mut map = SmallMap::<16, i32, i32>::default();
+        for i in 0..32 {
+            map.insert(i, i * 2);
+        }
+        assert!(!map.is_inline());
+        map.clear();
+        assert!(map.is_inline());
     }
 
     #[test]
