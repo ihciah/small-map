@@ -220,7 +220,8 @@ where
                             SmallMap::Inline(_) => unsafe { unreachable_unchecked() },
                         };
                         for (k, v) in inline.into_iter() {
-                            heap.insert_unique_unchecked(k, v);
+                            // Safety: Heap is new, so each K is unique (as long as all keys in Inline are unique)
+                            unsafe { heap.insert_unique_unchecked(k, v); }
                         }
                         heap
                     }
@@ -488,7 +489,7 @@ mod tests {
     #[test]
     fn fuzzing() {
         let mut smallmap = SmallMap::<16, i32, i32>::default();
-        let mut hashmap = HashMap::<i32, i32, RandomState>::default();
+        let mut hashmap = HashMap::<i32, i32, RandomState>::with_hasher(RandomState::new());
         for _ in 0..1000000 {
             let op = Operation::random();
             op.exec(&mut smallmap, &mut hashmap);
@@ -502,14 +503,14 @@ mod tests {
         }
         impl Operation {
             fn random() -> Self {
-                let mut rng = rand::thread_rng();
+                let mut rng = rand::rng();
 
-                let choice: u8 = rng.gen();
+                let choice: u8 = rng.random();
                 match choice % 4 {
-                    0 => Operation::Insert(rng.gen_range(0..32), rng.gen()),
-                    1 => Operation::Remove(rng.gen_range(0..32)),
-                    2 => Operation::Get(rng.gen_range(0..32)),
-                    3 => Operation::ModifyIfExist(rng.gen_range(0..32), rng.gen()),
+                    0 => Operation::Insert(rng.random_range(0..32), rng.random()),
+                    1 => Operation::Remove(rng.random_range(0..32)),
+                    2 => Operation::Get(rng.random_range(0..32)),
+                    3 => Operation::ModifyIfExist(rng.random_range(0..32), rng.random()),
                     _ => unreachable!(),
                 }
             }

@@ -55,7 +55,7 @@ pub(crate) struct AlignedGroups<const N: usize> {
 impl<const N: usize> AlignedGroups<N> {
     #[inline]
     unsafe fn ctrl(&self, index: usize) -> *mut u8 {
-        self.groups.as_ptr().add(index).cast_mut()
+        unsafe { self.groups.as_ptr().add(index) }.cast_mut()
     }
 
     #[inline]
@@ -218,17 +218,19 @@ impl<const N: usize, T> RawInline<N, T> {
     /// raw bucket.
     #[inline]
     unsafe fn insert_in_slot(&mut self, hash: u64, slot: InsertSlot, value: T) -> Bucket<T> {
-        self.record_item_insert_at(slot.index, hash);
-        let bucket = self.bucket(slot.index);
-        bucket.write(value);
-        bucket
+        unsafe {
+            self.record_item_insert_at(slot.index, hash);
+            let bucket = self.bucket(slot.index);
+            bucket.write(value);
+            bucket
+        }
     }
 
     /// Inserts a new element into the table in the given slot, and returns its
     /// raw bucket.
     #[inline]
     unsafe fn record_item_insert_at(&mut self, index: usize, hash: u64) {
-        self.set_ctrl_h2(index, hash);
+        unsafe { self.set_ctrl_h2(index, hash); }
         self.len += 1;
     }
 
@@ -237,7 +239,7 @@ impl<const N: usize, T> RawInline<N, T> {
     #[inline]
     unsafe fn set_ctrl_h2(&mut self, index: usize, hash: u64) {
         // SAFETY: The caller must uphold the safety rules for the [`RawTableInner::set_ctrl_h2`]
-        *self.aligned_groups.ctrl(index) = h2(hash);
+        unsafe { *self.aligned_groups.ctrl(index) = h2(hash); }
     }
 
     /// Finds and removes an element from the table, returning it.
@@ -254,26 +256,30 @@ impl<const N: usize, T> RawInline<N, T> {
     #[inline]
     #[allow(clippy::needless_pass_by_value)]
     unsafe fn remove(&mut self, item: Bucket<T>) -> (T, InsertSlot) {
-        self.erase_no_drop(&item);
-        (
-            item.read(),
-            InsertSlot {
-                index: self.bucket_index(&item),
-            },
-        )
+        unsafe {
+            self.erase_no_drop(&item);
+            (
+                item.read(),
+                InsertSlot {
+                    index: self.bucket_index(&item),
+                },
+            )
+        }
     }
 
     /// Erases an element from the table without dropping it.
     #[inline]
     unsafe fn erase_no_drop(&mut self, item: &Bucket<T>) {
-        let index = self.bucket_index(item);
-        self.erase(index);
+        unsafe {
+            let index = self.bucket_index(item);
+            self.erase(index);
+        }
     }
 
     /// Returns the index of a bucket from a `Bucket`.
     #[inline]
     unsafe fn bucket_index(&self, bucket: &Bucket<T>) -> usize {
-        bucket.to_base_index(NonNull::new_unchecked(self.data.as_ptr() as _))
+        unsafe { bucket.to_base_index(NonNull::new_unchecked(self.data.as_ptr() as _)) }
     }
 
     /// Erases the [`Bucket`]'s control byte at the given index so that it does not
@@ -281,23 +287,27 @@ impl<const N: usize, T> RawInline<N, T> {
     /// increases `self.growth_left`.
     #[inline]
     unsafe fn erase(&mut self, index: usize) {
-        *self.aligned_groups.ctrl(index) = DELETED;
+        unsafe { *self.aligned_groups.ctrl(index) = DELETED; }
         self.len -= 1;
     }
 
     /// Returns a pointer to an element in the table.
     #[inline]
     unsafe fn bucket(&self, index: usize) -> Bucket<T> {
-        Bucket::from_base_index(
-            NonNull::new_unchecked(transmute(self.data.as_ptr().cast_mut())),
-            index,
-        )
+        unsafe {
+            Bucket::from_base_index(
+                NonNull::new_unchecked(transmute(self.data.as_ptr().cast_mut())),
+                index,
+            )
+        }
     }
 
     #[inline]
     unsafe fn raw_iter_inner(&self) -> RawIterInner<T> {
-        let init_group = Group::load_aligned(self.aligned_groups.ctrl(0)).match_full();
-        RawIterInner::new(init_group, self.len)
+        unsafe {
+            let init_group = Group::load_aligned(self.aligned_groups.ctrl(0)).match_full();
+            RawIterInner::new(init_group, self.len)
+        }
     }
 
     #[inline]
@@ -434,7 +444,7 @@ impl<const N: usize, K, V, S> Inline<N, K, V, S> {
     // Hasher must exist.
     #[inline]
     pub(crate) unsafe fn take_hasher(&mut self) -> S {
-        self.hash_builder.take().unwrap_unchecked()
+        unsafe { self.hash_builder.take().unwrap_unchecked() }
     }
 
     #[inline]
