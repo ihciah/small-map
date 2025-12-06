@@ -325,6 +325,29 @@ impl<const N: usize, T> RawInline<N, T> {
     }
 }
 
+impl<const N: usize, K, V> RawInline<N, (K, V)> {
+    #[inline]
+    fn retain<F>(&mut self, f: &mut F)
+    where
+        F: FnMut(&K, &mut V) -> bool,
+    {
+        for i in 0..N {
+            let ctrl = self.aligned_groups.groups[i];
+            // Only process valid entries (not EMPTY and not DELETED)
+            if ctrl & 0x80 == 0 {
+                let (k, v) = unsafe { self.data[i].assume_init_mut() };
+                if !f(k, v) {
+                    unsafe {
+                        *self.aligned_groups.ctrl(i) = DELETED;
+                        core::ptr::drop_in_place(self.data[i].as_mut_ptr());
+                    }
+                    self.len -= 1;
+                }
+            }
+        }
+    }
+}
+
 impl<const N: usize, T> IntoIterator for RawInline<N, T> {
     type Item = T;
     type IntoIter = RawIntoIter<N, T>;
@@ -526,6 +549,15 @@ where
     {
         let hash = make_hash::<Q, S>(self.hash_builder(), k);
         self.raw.remove_entry(hash, equivalent_key(k))
+    }
+
+    /// Retains only the elements specified by the predicate.
+    #[inline]
+    pub(crate) fn retain<F>(&mut self, f: &mut F)
+    where
+        F: FnMut(&K, &mut V) -> bool,
+    {
+        self.raw.retain(f);
     }
 
     #[inline]

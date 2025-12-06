@@ -2,10 +2,30 @@
 #![cfg_attr(feature = "nightly", allow(internal_features))]
 #![cfg_attr(feature = "nightly", feature(core_intrinsics))]
 
+//! A small inline SIMD-accelerated hashmap designed for small amounts of data.
+//!
+//! `SmallMap` stores data inline when the number of elements is small (up to N),
+//! and automatically spills to the heap when it grows beyond that threshold.
+//!
+//! # Examples
+//!
+//! ```
+//! use small_map::SmallMap;
+//!
+//! let mut map: SmallMap<8, &str, i32> = SmallMap::new();
+//! map.insert("a", 1);
+//! map.insert("b", 2);
+//!
+//! assert_eq!(map.get(&"a"), Some(&1));
+//! assert!(map.contains_key(&"b"));
+//! assert!(map.is_inline()); // Still stored inline
+//! ```
+
 use core::{
     hash::{BuildHasher, Hash},
     hint::unreachable_unchecked,
     iter::FusedIterator,
+    ops::Index,
 };
 use std::{
     collections::hash_map::RandomState,
@@ -169,6 +189,18 @@ where
     K: Eq + Hash,
     S: BuildHasher,
 {
+    /// Returns a reference to the value corresponding to the key.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use small_map::SmallMap;
+    ///
+    /// let mut map: SmallMap<8, i32, &str> = SmallMap::new();
+    /// map.insert(1, "a");
+    /// assert_eq!(map.get(&1), Some(&"a"));
+    /// assert_eq!(map.get(&2), None);
+    /// ```
     #[inline]
     pub fn get<Q>(&self, k: &Q) -> Option<&V>
     where
@@ -181,6 +213,19 @@ where
     }
 
     /// Returns a mutable reference to the value corresponding to the key.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use small_map::SmallMap;
+    ///
+    /// let mut map: SmallMap<8, i32, i32> = SmallMap::new();
+    /// map.insert(1, 10);
+    /// if let Some(v) = map.get_mut(&1) {
+    ///     *v = 20;
+    /// }
+    /// assert_eq!(map.get(&1), Some(&20));
+    /// ```
     #[inline]
     pub fn get_mut<Q>(&mut self, k: &Q) -> Option<&mut V>
     where
@@ -193,6 +238,17 @@ where
     }
 
     /// Returns the key-value pair corresponding to the supplied key.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use small_map::SmallMap;
+    ///
+    /// let mut map: SmallMap<8, i32, &str> = SmallMap::new();
+    /// map.insert(1, "a");
+    /// assert_eq!(map.get_key_value(&1), Some((&1, &"a")));
+    /// assert_eq!(map.get_key_value(&2), None);
+    /// ```
     #[inline]
     pub fn get_key_value<Q>(&self, k: &Q) -> Option<(&K, &V)>
     where
@@ -204,6 +260,41 @@ where
         }
     }
 
+    /// Returns `true` if the map contains a value for the specified key.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use small_map::SmallMap;
+    ///
+    /// let mut map: SmallMap<8, i32, &str> = SmallMap::new();
+    /// map.insert(1, "a");
+    /// assert!(map.contains_key(&1));
+    /// assert!(!map.contains_key(&2));
+    /// ```
+    #[inline]
+    pub fn contains_key<Q>(&self, k: &Q) -> bool
+    where
+        Q: ?Sized + Hash + Equivalent<K>,
+    {
+        self.get(k).is_some()
+    }
+
+    /// Inserts a key-value pair into the map.
+    ///
+    /// If the map did not have this key present, `None` is returned.
+    /// If the map did have this key present, the value is updated, and the old value is returned.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use small_map::SmallMap;
+    ///
+    /// let mut map: SmallMap<8, i32, &str> = SmallMap::new();
+    /// assert_eq!(map.insert(1, "a"), None);
+    /// assert_eq!(map.insert(1, "b"), Some("a"));
+    /// assert_eq!(map.get(&1), Some(&"b"));
+    /// ```
     #[inline]
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
         match self {
@@ -232,6 +323,19 @@ where
         }
     }
 
+    /// Removes a key from the map, returning the value at the key if the key was previously in the
+    /// map.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use small_map::SmallMap;
+    ///
+    /// let mut map: SmallMap<8, i32, &str> = SmallMap::new();
+    /// map.insert(1, "a");
+    /// assert_eq!(map.remove(&1), Some("a"));
+    /// assert_eq!(map.remove(&1), None);
+    /// ```
     #[inline]
     pub fn remove<Q>(&mut self, k: &Q) -> Option<V>
     where
@@ -244,6 +348,19 @@ where
         }
     }
 
+    /// Removes a key from the map, returning the stored key and value if the key was previously in
+    /// the map.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use small_map::SmallMap;
+    ///
+    /// let mut map: SmallMap<8, i32, &str> = SmallMap::new();
+    /// map.insert(1, "a");
+    /// assert_eq!(map.remove_entry(&1), Some((1, "a")));
+    /// assert_eq!(map.remove_entry(&1), None);
+    /// ```
     #[inline]
     pub fn remove_entry<Q>(&mut self, k: &Q) -> Option<(K, V)>
     where
@@ -252,6 +369,33 @@ where
         match self {
             SmallMap::Heap(inner) => inner.remove_entry(k),
             SmallMap::Inline(inner) => inner.remove_entry(k),
+        }
+    }
+
+    /// Retains only the elements specified by the predicate.
+    ///
+    /// In other words, remove all pairs `(k, v)` for which `f(&k, &mut v)` returns `false`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use small_map::SmallMap;
+    ///
+    /// let mut map: SmallMap<8, i32, i32> = SmallMap::new();
+    /// for i in 0..8 {
+    ///     map.insert(i, i * 10);
+    /// }
+    /// map.retain(|&k, _| k % 2 == 0);
+    /// assert_eq!(map.len(), 4);
+    /// ```
+    #[inline]
+    pub fn retain<F>(&mut self, mut f: F)
+    where
+        F: FnMut(&K, &mut V) -> bool,
+    {
+        match self {
+            SmallMap::Heap(inner) => inner.retain(f),
+            SmallMap::Inline(inner) => inner.retain(&mut f),
         }
     }
 }
@@ -275,7 +419,7 @@ where
     /// }
     /// assert!(!map.is_inline());
     /// assert_eq!(map.len(), 16);
-    /// 
+    ///
     /// map.clear();
     /// assert!(map.is_inline());
     /// assert_eq!(map.len(), 0);
@@ -325,6 +469,132 @@ impl<const N: usize, K, V> ExactSizeIterator for Iter<'_, N, K, V> {
         }
     }
 }
+
+impl<const N: usize, K, V> FusedIterator for Iter<'_, N, K, V> {}
+
+/// An iterator over the keys of a `SmallMap`.
+pub struct Keys<'a, const N: usize, K, V> {
+    inner: Iter<'a, N, K, V>,
+}
+
+impl<'a, const N: usize, K, V> Iterator for Keys<'a, N, K, V> {
+    type Item = &'a K;
+
+    #[inline]
+    fn next(&mut self) -> Option<&'a K> {
+        match self.inner.next() {
+            Some((k, _)) => Some(k),
+            None => None,
+        }
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<const N: usize, K, V> ExactSizeIterator for Keys<'_, N, K, V> {
+    #[inline]
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
+}
+
+impl<const N: usize, K, V> FusedIterator for Keys<'_, N, K, V> {}
+
+/// An iterator over the values of a `SmallMap`.
+pub struct Values<'a, const N: usize, K, V> {
+    inner: Iter<'a, N, K, V>,
+}
+
+impl<'a, const N: usize, K, V> Iterator for Values<'a, N, K, V> {
+    type Item = &'a V;
+
+    #[inline]
+    fn next(&mut self) -> Option<&'a V> {
+        match self.inner.next() {
+            Some((_, v)) => Some(v),
+            None => None,
+        }
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<const N: usize, K, V> ExactSizeIterator for Values<'_, N, K, V> {
+    #[inline]
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
+}
+
+impl<const N: usize, K, V> FusedIterator for Values<'_, N, K, V> {}
+
+/// A consuming iterator over the keys of a `SmallMap`.
+pub struct IntoKeys<const N: usize, K, V> {
+    inner: IntoIter<N, K, V>,
+}
+
+impl<const N: usize, K, V> Iterator for IntoKeys<N, K, V> {
+    type Item = K;
+
+    #[inline]
+    fn next(&mut self) -> Option<K> {
+        match self.inner.next() {
+            Some((k, _)) => Some(k),
+            None => None,
+        }
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<const N: usize, K, V> ExactSizeIterator for IntoKeys<N, K, V> {
+    #[inline]
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
+}
+
+impl<const N: usize, K, V> FusedIterator for IntoKeys<N, K, V> {}
+
+/// A consuming iterator over the values of a `SmallMap`.
+pub struct IntoValues<const N: usize, K, V> {
+    inner: IntoIter<N, K, V>,
+}
+
+impl<const N: usize, K, V> Iterator for IntoValues<N, K, V> {
+    type Item = V;
+
+    #[inline]
+    fn next(&mut self) -> Option<V> {
+        match self.inner.next() {
+            Some((_, v)) => Some(v),
+            None => None,
+        }
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<const N: usize, K, V> ExactSizeIterator for IntoValues<N, K, V> {
+    #[inline]
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
+}
+
+impl<const N: usize, K, V> FusedIterator for IntoValues<N, K, V> {}
 
 pub enum IntoIter<const N: usize, K, V> {
     Heap(hashbrown::hash_map::IntoIter<K, V>),
@@ -392,6 +662,18 @@ impl<'a, const N: usize, K, V, S> IntoIterator for &'a SmallMap<N, K, V, S> {
 }
 
 impl<const N: usize, K, V, S> SmallMap<N, K, V, S> {
+    /// Returns the number of elements in the map.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use small_map::SmallMap;
+    ///
+    /// let mut map: SmallMap<8, i32, i32> = SmallMap::new();
+    /// assert_eq!(map.len(), 0);
+    /// map.insert(1, 10);
+    /// assert_eq!(map.len(), 1);
+    /// ```
     #[inline]
     pub fn len(&self) -> usize {
         match self {
@@ -400,6 +682,18 @@ impl<const N: usize, K, V, S> SmallMap<N, K, V, S> {
         }
     }
 
+    /// Returns `true` if the map contains no elements.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use small_map::SmallMap;
+    ///
+    /// let mut map: SmallMap<8, i32, i32> = SmallMap::new();
+    /// assert!(map.is_empty());
+    /// map.insert(1, 10);
+    /// assert!(!map.is_empty());
+    /// ```
     #[inline]
     pub fn is_empty(&self) -> bool {
         match self {
@@ -408,12 +702,178 @@ impl<const N: usize, K, V, S> SmallMap<N, K, V, S> {
         }
     }
 
+    /// An iterator visiting all key-value pairs in arbitrary order.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use small_map::SmallMap;
+    ///
+    /// let mut map: SmallMap<8, &str, i32> = SmallMap::new();
+    /// map.insert("a", 1);
+    /// map.insert("b", 2);
+    ///
+    /// for (key, val) in map.iter() {
+    ///     println!("key: {key} val: {val}");
+    /// }
+    /// ```
     #[inline]
     pub fn iter(&self) -> Iter<'_, N, K, V> {
         match self {
             SmallMap::Heap(inner) => Iter::Heap(inner.iter()),
             SmallMap::Inline(inner) => Iter::Inline(inner.iter()),
         }
+    }
+
+    /// An iterator visiting all keys in arbitrary order.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use small_map::SmallMap;
+    ///
+    /// let mut map: SmallMap<8, &str, i32> = SmallMap::new();
+    /// map.insert("a", 1);
+    /// map.insert("b", 2);
+    ///
+    /// for key in map.keys() {
+    ///     println!("{key}");
+    /// }
+    /// ```
+    #[inline]
+    pub fn keys(&self) -> Keys<'_, N, K, V> {
+        Keys { inner: self.iter() }
+    }
+
+    /// An iterator visiting all values in arbitrary order.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use small_map::SmallMap;
+    ///
+    /// let mut map: SmallMap<8, &str, i32> = SmallMap::new();
+    /// map.insert("a", 1);
+    /// map.insert("b", 2);
+    ///
+    /// for val in map.values() {
+    ///     println!("{val}");
+    /// }
+    /// ```
+    #[inline]
+    pub fn values(&self) -> Values<'_, N, K, V> {
+        Values { inner: self.iter() }
+    }
+
+    /// Creates a consuming iterator visiting all the keys in arbitrary order.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use small_map::SmallMap;
+    ///
+    /// let mut map: SmallMap<8, &str, i32> = SmallMap::new();
+    /// map.insert("a", 1);
+    /// map.insert("b", 2);
+    ///
+    /// let keys: Vec<_> = map.into_keys().collect();
+    /// ```
+    #[inline]
+    pub fn into_keys(self) -> IntoKeys<N, K, V> {
+        IntoKeys {
+            inner: self.into_iter(),
+        }
+    }
+
+    /// Creates a consuming iterator visiting all the values in arbitrary order.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use small_map::SmallMap;
+    ///
+    /// let mut map: SmallMap<8, &str, i32> = SmallMap::new();
+    /// map.insert("a", 1);
+    /// map.insert("b", 2);
+    ///
+    /// let values: Vec<_> = map.into_values().collect();
+    /// ```
+    #[inline]
+    pub fn into_values(self) -> IntoValues<N, K, V> {
+        IntoValues {
+            inner: self.into_iter(),
+        }
+    }
+}
+
+// PartialEq implementation
+impl<const N: usize, K, V, S> PartialEq for SmallMap<N, K, V, S>
+where
+    K: Eq + Hash,
+    V: PartialEq,
+    S: BuildHasher,
+{
+    fn eq(&self, other: &Self) -> bool {
+        if self.len() != other.len() {
+            return false;
+        }
+        self.iter()
+            .all(|(key, value)| other.get(key) == Some(value))
+    }
+}
+
+impl<const N: usize, K, V, S> Eq for SmallMap<N, K, V, S>
+where
+    K: Eq + Hash,
+    V: Eq,
+    S: BuildHasher,
+{
+}
+
+// Index implementation
+impl<const N: usize, K, V, S, Q> Index<&Q> for SmallMap<N, K, V, S>
+where
+    K: Eq + Hash,
+    Q: ?Sized + Hash + Equivalent<K>,
+    S: BuildHasher,
+{
+    type Output = V;
+
+    /// Returns a reference to the value corresponding to the supplied key.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the key is not present in the `SmallMap`.
+    #[inline]
+    fn index(&self, key: &Q) -> &V {
+        self.get(key).expect("no entry found for key")
+    }
+}
+
+// Extend implementation
+impl<const N: usize, K, V, S> Extend<(K, V)> for SmallMap<N, K, V, S>
+where
+    K: Eq + Hash,
+    S: BuildHasher,
+{
+    #[inline]
+    fn extend<T: IntoIterator<Item = (K, V)>>(&mut self, iter: T) {
+        for (k, v) in iter {
+            self.insert(k, v);
+        }
+    }
+}
+
+// FromIterator implementation
+impl<const N: usize, K, V, S> FromIterator<(K, V)> for SmallMap<N, K, V, S>
+where
+    K: Eq + Hash,
+    S: BuildHasher + Default,
+{
+    fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
+        let mut map = SmallMap::new();
+        map.extend(iter);
+        map
     }
 }
 
@@ -734,5 +1194,137 @@ mod tests {
         let mut cloned = cloned;
         cloned.insert(3, 30);
         assert_eq!(cloned.get(&3), Some(&30));
+    }
+
+    #[test]
+    fn contains_key_test() {
+        let mut map: SmallMap<8, i32, &str> = SmallMap::new();
+        map.insert(1, "a");
+        map.insert(2, "b");
+
+        assert!(map.contains_key(&1));
+        assert!(map.contains_key(&2));
+        assert!(!map.contains_key(&3));
+
+        map.remove(&1);
+        assert!(!map.contains_key(&1));
+    }
+
+    #[test]
+    fn keys_values_test() {
+        let mut map: SmallMap<8, i32, i32> = SmallMap::new();
+        for i in 0..5 {
+            map.insert(i, i * 10);
+        }
+
+        let keys: Vec<_> = map.keys().cloned().collect();
+        assert_eq!(keys.len(), 5);
+        for i in 0..5 {
+            assert!(keys.contains(&i));
+        }
+
+        let values: Vec<_> = map.values().cloned().collect();
+        assert_eq!(values.len(), 5);
+        for i in 0..5 {
+            assert!(values.contains(&(i * 10)));
+        }
+    }
+
+    #[test]
+    fn into_keys_values_test() {
+        let mut map: SmallMap<8, i32, i32> = SmallMap::new();
+        for i in 0..5 {
+            map.insert(i, i * 10);
+        }
+
+        let keys: Vec<_> = map.clone().into_keys().collect();
+        assert_eq!(keys.len(), 5);
+
+        let values: Vec<_> = map.into_values().collect();
+        assert_eq!(values.len(), 5);
+    }
+
+    #[test]
+    fn retain_test() {
+        let mut map: SmallMap<8, i32, i32> = SmallMap::new();
+        for i in 0..8 {
+            map.insert(i, i * 10);
+        }
+
+        map.retain(|&k, _| k % 2 == 0);
+        assert_eq!(map.len(), 4);
+
+        for i in (0..8).step_by(2) {
+            assert!(map.contains_key(&i));
+        }
+        for i in (1..8).step_by(2) {
+            assert!(!map.contains_key(&i));
+        }
+    }
+
+    #[test]
+    fn partial_eq_test() {
+        let mut map1: SmallMap<8, i32, i32> = SmallMap::new();
+        let mut map2: SmallMap<8, i32, i32> = SmallMap::new();
+
+        map1.insert(1, 10);
+        map1.insert(2, 20);
+
+        map2.insert(2, 20);
+        map2.insert(1, 10);
+
+        assert_eq!(map1, map2);
+
+        map2.insert(3, 30);
+        assert_ne!(map1, map2);
+    }
+
+    #[test]
+    fn index_test() {
+        let mut map: SmallMap<8, i32, &str> = SmallMap::new();
+        map.insert(1, "a");
+        map.insert(2, "b");
+
+        assert_eq!(map[&1], "a");
+        assert_eq!(map[&2], "b");
+    }
+
+    #[test]
+    #[should_panic(expected = "no entry found for key")]
+    fn index_panic_test() {
+        let map: SmallMap<8, i32, &str> = SmallMap::new();
+        let _ = map[&1];
+    }
+
+    #[test]
+    fn extend_test() {
+        let mut map: SmallMap<8, i32, i32> = SmallMap::new();
+        map.insert(1, 10);
+
+        map.extend([(2, 20), (3, 30)]);
+        assert_eq!(map.len(), 3);
+        assert_eq!(map.get(&2), Some(&20));
+        assert_eq!(map.get(&3), Some(&30));
+    }
+
+    #[test]
+    fn from_iterator_test() {
+        let map: SmallMap<8, i32, i32> = [(1, 10), (2, 20), (3, 30)].into_iter().collect();
+        assert_eq!(map.len(), 3);
+        assert_eq!(map.get(&1), Some(&10));
+        assert_eq!(map.get(&2), Some(&20));
+        assert_eq!(map.get(&3), Some(&30));
+    }
+
+    #[test]
+    fn retain_heap_test() {
+        let mut map: SmallMap<4, i32, i32> = SmallMap::new();
+        for i in 0..10 {
+            map.insert(i, i * 10);
+        }
+        assert!(!map.is_inline());
+
+        map.retain(|&k, _| k % 2 == 0);
+        assert_eq!(map.len(), 5);
     }
 }
