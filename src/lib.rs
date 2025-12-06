@@ -881,9 +881,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::RefCell, rc::Rc};
+    use std::{cell::RefCell, collections::hash_map::RandomState, rc::Rc};
 
-    use ahash::RandomState;
     use hashbrown::HashMap;
     use rand::Rng;
 

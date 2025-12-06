@@ -1,4 +1,6 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use std::hint::black_box;
+
+use criterion::{criterion_group, criterion_main, Criterion};
 
 fn smallmap<const N: usize>(n: u8) {
     let mut map = small_map::SmallMap::<N, _, _>::default();
@@ -55,6 +57,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("stdhashmap-simple-16", |b| b.iter(|| std_hashmap(16)));
 }
 
+#[cfg(unix)]
 mod profile {
     use std::{fs::File, path::Path};
 
