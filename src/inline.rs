@@ -31,15 +31,30 @@ struct RawInline<const N: usize, T> {
 impl<const N: usize, T: Clone> Clone for RawInline<N, T> {
     #[inline]
     fn clone(&self) -> Self {
+        let mut aligned_groups = AlignedGroups {
+            groups: [EMPTY; N],
+            _align: [],
+        };
         let mut data = unsafe { MaybeUninit::<[MaybeUninit<T>; N]>::uninit().assume_init() };
-        for (idx, d) in self.data.iter().take(self.len).enumerate() {
-            unsafe {
-                data[idx] = MaybeUninit::new(d.assume_init_ref().clone());
+        let mut new_idx = 0;
+
+        for i in 0..N {
+            let ctrl = self.aligned_groups.groups[i];
+            // Only copy valid entries (not EMPTY and not DELETED)
+            // EMPTY = 0b1111_1111, DELETED = 0b1000_0000
+            // Valid h2 values have the high bit unset (0x00-0x7F)
+            if ctrl & 0x80 == 0 {
+                aligned_groups.groups[new_idx] = ctrl;
+                data[new_idx] = MaybeUninit::new(unsafe {
+                    self.data[i].assume_init_ref().clone()
+                });
+                new_idx += 1;
             }
         }
+
         Self {
-            aligned_groups: self.aligned_groups,
-            len: self.len,
+            aligned_groups,
+            len: new_idx,
             data,
         }
     }

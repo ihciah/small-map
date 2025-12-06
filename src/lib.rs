@@ -590,4 +590,147 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn clone_after_delete() {
+        let mut map: SmallMap<8, i32, String> = SmallMap::new();
+
+        map.insert(1, "one".to_string());
+        map.insert(2, "two".to_string());
+        map.insert(3, "three".to_string());
+
+        assert_eq!(map.len(), 3);
+        assert!(map.is_inline());
+
+        map.remove(&2);
+        assert_eq!(map.len(), 2);
+
+        let cloned = map.clone();
+
+        assert_eq!(cloned.len(), 2);
+        assert_eq!(cloned.get(&1), Some(&"one".to_string()));
+        assert_eq!(cloned.get(&3), Some(&"three".to_string()));
+        assert_eq!(cloned.get(&2), None);
+
+        let mut count = 0;
+        for _ in cloned.iter() {
+            count += 1;
+        }
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn clone_after_multiple_deletes() {
+        let mut map: SmallMap<16, i32, i32> = SmallMap::new();
+
+        for i in 0..10 {
+            map.insert(i, i * 100);
+        }
+        assert_eq!(map.len(), 10);
+
+        for i in (0..10).step_by(2) {
+            map.remove(&i);
+        }
+        assert_eq!(map.len(), 5);
+
+        let cloned = map.clone();
+        assert_eq!(cloned.len(), 5);
+
+        for i in (1..10).step_by(2) {
+            assert_eq!(cloned.get(&i), Some(&(i * 100)));
+        }
+
+        for i in (0..10).step_by(2) {
+            assert_eq!(cloned.get(&i), None);
+        }
+
+        let collected: Vec<_> = cloned.iter().collect();
+        assert_eq!(collected.len(), 5);
+    }
+
+    #[test]
+    fn insert_into_cloned_after_delete() {
+        let mut map: SmallMap<8, i32, String> = SmallMap::new();
+
+        map.insert(1, "one".to_string());
+        map.insert(2, "two".to_string());
+        map.insert(3, "three".to_string());
+
+        map.remove(&2);
+
+        let mut cloned = map.clone();
+
+        cloned.insert(4, "four".to_string());
+
+        assert_eq!(cloned.len(), 3);
+        assert_eq!(cloned.get(&1), Some(&"one".to_string()));
+        assert_eq!(cloned.get(&3), Some(&"three".to_string()));
+        assert_eq!(cloned.get(&4), Some(&"four".to_string()));
+    }
+
+    #[test]
+    fn into_iter_cloned_after_delete() {
+        let mut map: SmallMap<8, i32, String> = SmallMap::new();
+
+        map.insert(1, "one".to_string());
+        map.insert(2, "two".to_string());
+        map.insert(3, "three".to_string());
+
+        map.remove(&2);
+
+        let cloned = map.clone();
+
+        let items: Vec<_> = cloned.into_iter().collect();
+        assert_eq!(items.len(), 2);
+    }
+
+    #[test]
+    fn clone_compaction() {
+        // Test that clone compacts the data array
+        let mut map: SmallMap<8, i32, i32> = SmallMap::new();
+
+        // Fill with gaps: insert 0-7, then delete evens
+        for i in 0..8 {
+            map.insert(i, i * 10);
+        }
+        for i in (0..8).step_by(2) {
+            map.remove(&i);
+        }
+
+        // Clone should compact: 4 elements at indices 0-3
+        let cloned = map.clone();
+        assert_eq!(cloned.len(), 4);
+
+        // Verify all odd keys are present
+        for i in (1..8).step_by(2) {
+            assert_eq!(cloned.get(&i), Some(&(i * 10)));
+        }
+
+        // Insert into cloned should work correctly
+        let mut cloned = cloned;
+        cloned.insert(100, 1000);
+        assert_eq!(cloned.len(), 5);
+        assert_eq!(cloned.get(&100), Some(&1000));
+    }
+
+    #[test]
+    fn clone_empty_after_delete_all() {
+        let mut map: SmallMap<8, i32, i32> = SmallMap::new();
+
+        map.insert(1, 10);
+        map.insert(2, 20);
+        map.remove(&1);
+        map.remove(&2);
+
+        assert_eq!(map.len(), 0);
+
+        let cloned = map.clone();
+        assert_eq!(cloned.len(), 0);
+        assert!(cloned.is_empty());
+
+        // Should be able to insert into cloned empty map
+        let mut cloned = cloned;
+        cloned.insert(3, 30);
+        assert_eq!(cloned.get(&3), Some(&30));
+    }
 }
