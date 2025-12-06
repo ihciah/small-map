@@ -33,6 +33,8 @@ hashes = ["ahash", "fxhash"]
 ahash = ["dep:ahash"]
 fxhash = ["dep:rustc-hash"]
 serde = ["dep:serde", "hashbrown/serde"]
+nightly = []
+inline-more = ["hashbrown/inline-more"]
 
 [[bench]]
 name = "simple"

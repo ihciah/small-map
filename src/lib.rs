@@ -1,4 +1,6 @@
 #![allow(clippy::manual_map)]
+#![cfg_attr(feature = "nightly", allow(internal_features))]
+#![cfg_attr(feature = "nightly", feature(core_intrinsics))]
 
 use core::{
     hash::{BuildHasher, Hash},
@@ -168,9 +170,9 @@ where
     S: BuildHasher,
 {
     #[inline]
-    pub fn get<Q: ?Sized>(&self, k: &Q) -> Option<&V>
+    pub fn get<Q>(&self, k: &Q) -> Option<&V>
     where
-        Q: Hash + Equivalent<K>,
+        Q: ?Sized + Hash + Equivalent<K>,
     {
         match self {
             SmallMap::Heap(inner) => inner.get(k),
@@ -180,9 +182,9 @@ where
 
     /// Returns a mutable reference to the value corresponding to the key.
     #[inline]
-    pub fn get_mut<Q: ?Sized>(&mut self, k: &Q) -> Option<&mut V>
+    pub fn get_mut<Q>(&mut self, k: &Q) -> Option<&mut V>
     where
-        Q: Hash + Equivalent<K>,
+        Q: ?Sized + Hash + Equivalent<K>,
     {
         match self {
             SmallMap::Heap(inner) => inner.get_mut(k),
@@ -192,9 +194,9 @@ where
 
     /// Returns the key-value pair corresponding to the supplied key.
     #[inline]
-    pub fn get_key_value<Q: ?Sized>(&self, k: &Q) -> Option<(&K, &V)>
+    pub fn get_key_value<Q>(&self, k: &Q) -> Option<(&K, &V)>
     where
-        Q: Hash + Equivalent<K>,
+        Q: ?Sized + Hash + Equivalent<K>,
     {
         match self {
             SmallMap::Heap(inner) => inner.get_key_value(k),
@@ -231,9 +233,9 @@ where
     }
 
     #[inline]
-    pub fn remove<Q: ?Sized>(&mut self, k: &Q) -> Option<V>
+    pub fn remove<Q>(&mut self, k: &Q) -> Option<V>
     where
-        Q: Hash + Equivalent<K>,
+        Q: ?Sized + Hash + Equivalent<K>,
     {
         // Avoid `Option::map` because it bloats LLVM IR.
         match self.remove_entry(k) {
@@ -243,9 +245,9 @@ where
     }
 
     #[inline]
-    pub fn remove_entry<Q: ?Sized>(&mut self, k: &Q) -> Option<(K, V)>
+    pub fn remove_entry<Q>(&mut self, k: &Q) -> Option<(K, V)>
     where
-        Q: Hash + Equivalent<K>,
+        Q: ?Sized + Hash + Equivalent<K>,
     {
         match self {
             SmallMap::Heap(inner) => inner.remove_entry(k),

@@ -45,9 +45,7 @@ impl<const N: usize, T: Clone> Clone for RawInline<N, T> {
             // Valid h2 values have the high bit unset (0x00-0x7F)
             if ctrl & 0x80 == 0 {
                 aligned_groups.groups[new_idx] = ctrl;
-                data[new_idx] = MaybeUninit::new(unsafe {
-                    self.data[i].assume_init_ref().clone()
-                });
+                data[new_idx] = MaybeUninit::new(unsafe { self.data[i].assume_init_ref().clone() });
                 new_idx += 1;
             }
         }
@@ -142,7 +140,7 @@ impl<const N: usize, T> RawInline<N, T> {
                 }
                 probe_pos += Group::WIDTH;
             }
-            if N % Group::WIDTH != 0 {
+            if !N.is_multiple_of(Group::WIDTH) {
                 let group = Group::load(self.aligned_groups.ctrl(probe_pos));
                 // Clear invalid tail.
                 let matches = group.match_byte(h2_hash).and(Self::TAIL_MASK);
@@ -194,7 +192,7 @@ impl<const N: usize, T> RawInline<N, T> {
                 }
                 probe_pos += Group::WIDTH;
             }
-            if N % Group::WIDTH != 0 {
+            if !N.is_multiple_of(Group::WIDTH) {
                 let group = Group::load(self.aligned_groups.ctrl(probe_pos));
                 let matches = group.match_byte(h2_hash).and(Self::TAIL_MASK);
                 for bit in matches {
@@ -304,7 +302,9 @@ impl<const N: usize, T> RawInline<N, T> {
     #[inline]
     unsafe fn bucket(&self, index: usize) -> Bucket<T> {
         Bucket::from_base_index(
-            NonNull::new_unchecked(transmute(self.data.as_ptr().cast_mut())),
+            NonNull::new_unchecked(transmute::<*mut MaybeUninit<T>, *mut T>(
+                self.data.as_ptr().cast_mut(),
+            )),
             index,
         )
     }
@@ -465,9 +465,9 @@ where
 {
     /// Returns a reference to the value corresponding to the key.
     #[inline]
-    pub(crate) fn get<Q: ?Sized>(&self, k: &Q) -> Option<&V>
+    pub(crate) fn get<Q>(&self, k: &Q) -> Option<&V>
     where
-        Q: Hash + Equivalent<K>,
+        Q: ?Sized + Hash + Equivalent<K>,
     {
         // Avoid `Option::map` because it bloats LLVM IR.
         match self.get_inner(k) {
@@ -478,9 +478,9 @@ where
 
     /// Returns a reference to the value corresponding to the key.
     #[inline]
-    pub(crate) fn get_mut<Q: ?Sized>(&mut self, k: &Q) -> Option<&mut V>
+    pub(crate) fn get_mut<Q>(&mut self, k: &Q) -> Option<&mut V>
     where
-        Q: Hash + Equivalent<K>,
+        Q: ?Sized + Hash + Equivalent<K>,
     {
         // Avoid `Option::map` because it bloats LLVM IR.
         match self.get_inner_mut(k) {
@@ -491,9 +491,9 @@ where
 
     /// Returns the key-value pair corresponding to the supplied key.
     #[inline]
-    pub(crate) fn get_key_value<Q: ?Sized>(&self, k: &Q) -> Option<(&K, &V)>
+    pub(crate) fn get_key_value<Q>(&self, k: &Q) -> Option<(&K, &V)>
     where
-        Q: Hash + Equivalent<K>,
+        Q: ?Sized + Hash + Equivalent<K>,
     {
         // Avoid `Option::map` because it bloats LLVM IR.
         match self.get_inner(k) {
@@ -520,18 +520,18 @@ where
     /// Removes a key from the map, returning the stored key and value if the
     /// key was previously in the map. Keeps the allocated memory for reuse.
     #[inline]
-    pub(crate) fn remove_entry<Q: ?Sized>(&mut self, k: &Q) -> Option<(K, V)>
+    pub(crate) fn remove_entry<Q>(&mut self, k: &Q) -> Option<(K, V)>
     where
-        Q: Hash + Equivalent<K>,
+        Q: ?Sized + Hash + Equivalent<K>,
     {
         let hash = make_hash::<Q, S>(self.hash_builder(), k);
         self.raw.remove_entry(hash, equivalent_key(k))
     }
 
     #[inline]
-    fn get_inner<Q: ?Sized>(&self, k: &Q) -> Option<&(K, V)>
+    fn get_inner<Q>(&self, k: &Q) -> Option<&(K, V)>
     where
-        Q: Hash + Equivalent<K>,
+        Q: ?Sized + Hash + Equivalent<K>,
     {
         if self.is_empty() {
             None
@@ -542,9 +542,9 @@ where
     }
 
     #[inline]
-    fn get_inner_mut<Q: ?Sized>(&mut self, k: &Q) -> Option<&mut (K, V)>
+    fn get_inner_mut<Q>(&mut self, k: &Q) -> Option<&mut (K, V)>
     where
-        Q: Hash + Equivalent<K>,
+        Q: ?Sized + Hash + Equivalent<K>,
     {
         if self.is_empty() {
             None

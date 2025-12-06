@@ -8,7 +8,7 @@ pub(crate) use core::convert::identity as unlikely;
 pub(crate) use core::intrinsics::{likely, unlikely};
 // Use strict provenance functions if available.
 #[cfg(feature = "nightly")]
-use core::ptr::invalid_mut;
+use core::ptr::without_provenance_mut as invalid_mut;
 use core::{
     hash::{BuildHasher, Hash},
     mem,
