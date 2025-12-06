@@ -313,7 +313,9 @@ where
                             SmallMap::Inline(_) => unsafe { unreachable_unchecked() },
                         };
                         for (k, v) in inline.into_iter() {
-                            heap.insert_unique_unchecked(k, v);
+                            // SAFETY: We're moving elements from inline storage to heap.
+                            // All keys are unique because they came from a valid map.
+                            unsafe { heap.insert_unique_unchecked(k, v) };
                         }
                         heap
                     }
@@ -964,14 +966,14 @@ mod tests {
         }
         impl Operation {
             fn random() -> Self {
-                let mut rng = rand::thread_rng();
+                let mut rng = rand::rng();
 
-                let choice: u8 = rng.gen();
+                let choice: u8 = rng.random();
                 match choice % 4 {
-                    0 => Operation::Insert(rng.gen_range(0..32), rng.gen()),
-                    1 => Operation::Remove(rng.gen_range(0..32)),
-                    2 => Operation::Get(rng.gen_range(0..32)),
-                    3 => Operation::ModifyIfExist(rng.gen_range(0..32), rng.gen()),
+                    0 => Operation::Insert(rng.random_range(0..32), rng.random()),
+                    1 => Operation::Remove(rng.random_range(0..32)),
+                    2 => Operation::Get(rng.random_range(0..32)),
+                    3 => Operation::ModifyIfExist(rng.random_range(0..32), rng.random()),
                     _ => unreachable!(),
                 }
             }
