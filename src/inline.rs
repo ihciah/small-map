@@ -9,7 +9,7 @@ use crate::{
     raw::{
         h2,
         util::{equivalent_key, likely, make_hash, Bucket, InsertSlot, SizedTypeProperties},
-        BitMaskWord, Group,
+        Group,
     },
     Equivalent,
 };
@@ -80,85 +80,55 @@ impl<const N: usize, T> RawInline<N, T> {
         }
     }
 
-    /// Gets a reference to an element in the table.
+    /// Threshold for using linear search instead of SIMD.
+    const USE_LINEAR_THRESHOLD: usize = Group::WIDTH;
+
+    /// Searches for an element. Uses linear search for small N/len, SIMD otherwise.
+    /// Hash is computed lazily only when SIMD path is taken.
     #[inline]
-    fn get(&self, hash: u64, eq: impl FnMut(&T) -> bool) -> Option<&T> {
-        // Avoid `Option::map` because it bloats LLVM IR.
-        match self.find(hash, eq) {
-            Some(bucket) => Some(unsafe { bucket.as_ref() }),
-            None => None,
-        }
-    }
-
-    /// Gets a mutable reference to an element in the table.
-    #[inline]
-    fn get_mut(&mut self, hash: u64, eq: impl FnMut(&T) -> bool) -> Option<&mut T> {
-        // Avoid `Option::map` because it bloats LLVM IR.
-        match self.find(hash, eq) {
-            Some(bucket) => Some(unsafe { bucket.as_mut() }),
-            None => None,
-        }
-    }
-
-    const UNCHECKED_GROUP: usize = N / Group::WIDTH;
-    const TAIL_MASK: BitMaskWord = Group::LOWEST_MASK[N % Group::WIDTH];
-
-    /// Searches for an element in the table.
-    /// Data is stored contiguously in 0..len.
-    #[inline]
-    fn find(&self, hash: u64, mut eq: impl FnMut(&T) -> bool) -> Option<Bucket<T>> {
-        
-
-        unsafe {
-            let h2_hash = h2(hash);
-            let mut probe_pos = 0;
-
-            // Manually expand the loop
-            for _ in 0..Self::UNCHECKED_GROUP {
-                let group = Group::load(self.aligned_groups.ctrl(probe_pos));
-                let matches = group.match_byte(h2_hash);
-                for bit in matches {
-                    let index = probe_pos + bit;
-                    // Only check indices within valid range
-                    if index < self.len
-                        && likely(eq(self.data.get_unchecked(index).assume_init_ref()))
-                    {
-                        return Some(self.bucket(index));
-                    }
-                }
-                probe_pos += Group::WIDTH;
-            }
-            if !N.is_multiple_of(Group::WIDTH) {
-                let group = Group::load(self.aligned_groups.ctrl(probe_pos));
-                // Clear invalid tail.
-                let matches = group.match_byte(h2_hash).and(Self::TAIL_MASK);
-                for bit in matches {
-                    let index = probe_pos + bit;
-                    // Only check indices within valid range
-                    if index < self.len
-                        && likely(eq(self.data.get_unchecked(index).assume_init_ref()))
-                    {
-                        return Some(self.bucket(index));
-                    }
+    fn find(
+        &self,
+        hasher: impl FnOnce() -> u64,
+        mut eq: impl FnMut(&T) -> bool,
+    ) -> Option<Bucket<T>> {
+        if N <= Self::USE_LINEAR_THRESHOLD || self.len <= Self::USE_LINEAR_THRESHOLD {
+            // Linear search - no hash needed
+            for i in 0..self.len {
+                if eq(unsafe { self.data.get_unchecked(i).assume_init_ref() }) {
+                    return Some(unsafe { self.bucket(i) });
                 }
             }
             None
-        }
-    }
+        } else {
+            // SIMD search based on len
+            unsafe {
+                let h2_hash = h2(hasher());
+                let full_groups = self.len / Group::WIDTH;
+                let mut probe_pos = 0;
 
-    /// Searches for an element in the table. If the element is not found,
-    /// returns `Err` with the position of a slot where an element with the
-    /// same hash could be inserted.
-    /// Data is contiguous, so insert slot is always at `len`.
-    #[inline]
-    fn find_or_find_insert_slot(
-        &mut self,
-        hash: u64,
-        eq: impl FnMut(&T) -> bool,
-    ) -> Result<Bucket<T>, InsertSlot> {
-        match self.find(hash, eq) {
-            Some(bucket) => Ok(bucket),
-            None => Err(InsertSlot { index: self.len }),
+                for _ in 0..full_groups {
+                    let group = Group::load(self.aligned_groups.ctrl(probe_pos));
+                    for bit in group.match_byte(h2_hash) {
+                        let index = probe_pos + bit;
+                        if likely(eq(self.data.get_unchecked(index).assume_init_ref())) {
+                            return Some(self.bucket(index));
+                        }
+                    }
+                    probe_pos += Group::WIDTH;
+                }
+
+                let tail_len = self.len % Group::WIDTH;
+                if tail_len > 0 {
+                    let group = Group::load(self.aligned_groups.ctrl(probe_pos));
+                    for bit in group.match_byte(h2_hash).and(Group::LOWEST_MASK[tail_len]) {
+                        let index = probe_pos + bit;
+                        if likely(eq(self.data.get_unchecked(index).assume_init_ref())) {
+                            return Some(self.bucket(index));
+                        }
+                    }
+                }
+                None
+            }
         }
     }
 
@@ -188,11 +158,15 @@ impl<const N: usize, T> RawInline<N, T> {
         *self.aligned_groups.ctrl(index) = h2(hash);
     }
 
-    /// Finds and removes an element from the table, returning it.
+    /// Finds and removes an element from the table.
     #[inline]
-    fn remove_entry(&mut self, hash: u64, eq: impl FnMut(&T) -> bool) -> Option<T> {
+    fn remove_entry(
+        &mut self,
+        hasher: impl FnOnce() -> u64,
+        eq: impl FnMut(&T) -> bool,
+    ) -> Option<T> {
         // Avoid `Option::map` because it bloats LLVM IR.
-        match self.find(hash, eq) {
+        match self.find(hasher, eq) {
             Some(bucket) => Some(unsafe { self.remove(bucket).0 }),
             None => None,
         }
@@ -475,13 +449,14 @@ where
     /// Inserts a key-value pair into the map.
     #[inline]
     pub(crate) fn insert(&mut self, k: K, v: V) -> Option<V> {
-        let hash = make_hash::<K, S>(self.hash_builder(), &k);
-        match self.raw.find_or_find_insert_slot(hash, equivalent_key(&k)) {
-            Ok(bucket) => Some(mem::replace(unsafe { &mut bucket.as_mut().1 }, v)),
-            Err(slot) => {
-                unsafe {
-                    self.raw.insert_in_slot(hash, slot, (k, v));
-                }
+        let hash_builder = self.hash_builder.as_ref().unwrap();
+        let hasher = || make_hash::<K, S>(hash_builder, &k);
+        match self.raw.find(hasher, equivalent_key(&k)) {
+            Some(bucket) => Some(mem::replace(unsafe { &mut bucket.as_mut().1 }, v)),
+            None => {
+                let hash = make_hash::<K, S>(hash_builder, &k);
+                let slot = InsertSlot { index: self.raw.len };
+                unsafe { self.raw.insert_in_slot(hash, slot, (k, v)) };
                 None
             }
         }
@@ -494,8 +469,9 @@ where
     where
         Q: ?Sized + Hash + Equivalent<K>,
     {
-        let hash = make_hash::<Q, S>(self.hash_builder(), k);
-        self.raw.remove_entry(hash, equivalent_key(k))
+        let hash_builder = self.hash_builder.as_ref().unwrap();
+        let hasher = || make_hash::<Q, S>(hash_builder, k);
+        self.raw.remove_entry(hasher, equivalent_key(k))
     }
 
     /// Retains only the elements specified by the predicate.
@@ -513,10 +489,12 @@ where
         Q: ?Sized + Hash + Equivalent<K>,
     {
         if self.is_empty() {
-            None
-        } else {
-            let hash = make_hash::<Q, S>(self.hash_builder(), k);
-            self.raw.get(hash, equivalent_key(k))
+            return None;
+        }
+        let hasher = || make_hash::<Q, S>(self.hash_builder(), k);
+        match self.raw.find(hasher, equivalent_key(k)) {
+            Some(bucket) => Some(unsafe { bucket.as_ref() }),
+            None => None,
         }
     }
 
@@ -526,10 +504,13 @@ where
         Q: ?Sized + Hash + Equivalent<K>,
     {
         if self.is_empty() {
-            None
-        } else {
-            let hash = make_hash::<Q, S>(self.hash_builder(), k);
-            self.raw.get_mut(hash, equivalent_key(k))
+            return None;
+        }
+        let hash_builder = self.hash_builder.as_ref().unwrap();
+        let hasher = || make_hash::<Q, S>(hash_builder, k);
+        match self.raw.find(hasher, equivalent_key(k)) {
+            Some(bucket) => Some(unsafe { bucket.as_mut() }),
+            None => None,
         }
     }
 }

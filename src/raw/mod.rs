@@ -33,7 +33,7 @@ cfg_if! {
 mod bitmask;
 pub mod util;
 
-pub(crate) use imp::{BitMaskWord, Group};
+pub(crate) use imp::Group;
 
 // Constant for h2 function that grabing the top 7 bits of the hash.
 const MIN_HASH_LEN: usize = if mem::size_of::<usize>() < mem::size_of::<u64>() {
