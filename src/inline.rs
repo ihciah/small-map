@@ -15,10 +15,11 @@ use crate::{
 };
 
 #[derive(Clone)]
-pub struct Inline<const N: usize, K, V, S> {
+pub struct Inline<const N: usize, K, V, S, SI> {
     raw: RawInline<N, (K, V)>,
     // Option is for take, S always exists before drop.
-    hash_builder: Option<S>,
+    inline_hasher: Option<SI>,
+    heap_hasher: Option<S>,
 }
 
 struct RawInline<const N: usize, T> {
@@ -335,7 +336,7 @@ impl<const N: usize, K, V> Drop for IntoIter<N, K, V> {
     }
 }
 
-impl<const N: usize, K, V, S> IntoIterator for Inline<N, K, V, S> {
+impl<const N: usize, K, V, S, SI> IntoIterator for Inline<N, K, V, S, SI> {
     type Item = (K, V);
     type IntoIter = IntoIter<N, K, V>;
 
@@ -350,7 +351,7 @@ impl<const N: usize, K, V, S> IntoIterator for Inline<N, K, V, S> {
     }
 }
 
-impl<const N: usize, K, V, S> Inline<N, K, V, S> {
+impl<const N: usize, K, V, S, SI> Inline<N, K, V, S, SI> {
     #[inline]
     pub(crate) fn iter(&self) -> Iter<'_, N, K, V> {
         Iter {
@@ -361,7 +362,7 @@ impl<const N: usize, K, V, S> Inline<N, K, V, S> {
     }
 
     #[inline]
-    pub(crate) const fn new(hash_builder: S) -> Self {
+    pub(crate) const fn new(hash_builder: SI, heap_hasher: S) -> Self {
         assert!(N != 0, "SmallMap cannot be initialized with zero size.");
         Self {
             raw: RawInline {
@@ -370,7 +371,8 @@ impl<const N: usize, K, V, S> Inline<N, K, V, S> {
                 len: 0,
                 data: unsafe { MaybeUninit::uninit().assume_init() },
             },
-            hash_builder: Some(hash_builder),
+            inline_hasher: Some(hash_builder),
+            heap_hasher: Some(heap_hasher),
         }
     }
 
@@ -392,20 +394,27 @@ impl<const N: usize, K, V, S> Inline<N, K, V, S> {
     // # Safety
     // Hasher must exist.
     #[inline]
-    pub(crate) unsafe fn take_hasher(&mut self) -> S {
-        self.hash_builder.take().unwrap_unchecked()
+    pub(crate) unsafe fn take_inline_hasher(&mut self) -> SI {
+        self.inline_hasher.take().unwrap_unchecked()
+    }
+
+    // # Safety
+    // Hasher must exist.
+    #[inline]
+    pub(crate) unsafe fn take_heap_hasher(&mut self) -> S {
+        self.heap_hasher.take().unwrap_unchecked()
     }
 
     #[inline]
-    fn hash_builder(&self) -> &S {
-        self.hash_builder.as_ref().unwrap()
+    fn inline_hasher(&self) -> &SI {
+        self.inline_hasher.as_ref().unwrap()
     }
 }
 
-impl<const N: usize, K, V, S> Inline<N, K, V, S>
+impl<const N: usize, K, V, S, SI> Inline<N, K, V, S, SI>
 where
     K: Eq + Hash,
-    S: BuildHasher,
+    SI: BuildHasher,
 {
     /// Returns a reference to the value corresponding to the key.
     #[inline]
@@ -449,13 +458,15 @@ where
     /// Inserts a key-value pair into the map.
     #[inline]
     pub(crate) fn insert(&mut self, k: K, v: V) -> Option<V> {
-        let hash_builder = self.hash_builder.as_ref().unwrap();
-        let hasher = || make_hash::<K, S>(hash_builder, &k);
+        let hash_builder = self.inline_hasher.as_ref().unwrap();
+        let hasher = || make_hash::<K, SI>(hash_builder, &k);
         match self.raw.find(hasher, equivalent_key(&k)) {
             Some(bucket) => Some(mem::replace(unsafe { &mut bucket.as_mut().1 }, v)),
             None => {
-                let hash = make_hash::<K, S>(hash_builder, &k);
-                let slot = InsertSlot { index: self.raw.len };
+                let hash = make_hash::<K, SI>(hash_builder, &k);
+                let slot = InsertSlot {
+                    index: self.raw.len,
+                };
                 unsafe { self.raw.insert_in_slot(hash, slot, (k, v)) };
                 None
             }
@@ -469,8 +480,8 @@ where
     where
         Q: ?Sized + Hash + Equivalent<K>,
     {
-        let hash_builder = self.hash_builder.as_ref().unwrap();
-        let hasher = || make_hash::<Q, S>(hash_builder, k);
+        let hash_builder = self.inline_hasher.as_ref().unwrap();
+        let hasher = || make_hash::<Q, SI>(hash_builder, k);
         self.raw.remove_entry(hasher, equivalent_key(k))
     }
 
@@ -491,7 +502,7 @@ where
         if self.is_empty() {
             return None;
         }
-        let hasher = || make_hash::<Q, S>(self.hash_builder(), k);
+        let hasher = || make_hash::<Q, SI>(self.inline_hasher(), k);
         match self.raw.find(hasher, equivalent_key(k)) {
             Some(bucket) => Some(unsafe { bucket.as_ref() }),
             None => None,
@@ -506,8 +517,8 @@ where
         if self.is_empty() {
             return None;
         }
-        let hash_builder = self.hash_builder.as_ref().unwrap();
-        let hasher = || make_hash::<Q, S>(hash_builder, k);
+        let hash_builder = self.inline_hasher.as_ref().unwrap();
+        let hasher = || make_hash::<Q, SI>(hash_builder, k);
         match self.raw.find(hasher, equivalent_key(k)) {
             Some(bucket) => Some(unsafe { bucket.as_mut() }),
             None => None,

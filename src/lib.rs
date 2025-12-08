@@ -52,13 +52,20 @@ pub type FxSmallMap<const N: usize, K, V> =
 pub type ASmallMap<const N: usize, K, V> =
     SmallMap<N, K, V, core::hash::BuildHasherDefault<ahash::AHasher>>;
 
+#[cfg(feature = "fxhash")]
+type DefaultInlineHasher = core::hash::BuildHasherDefault<rustc_hash::FxHasher>;
+#[cfg(all(not(feature = "fxhash"), feature = "ahash"))]
+type DefaultInlineHasher = core::hash::BuildHasherDefault<ahash::AHasher>;
+#[cfg(all(not(feature = "fxhash"), not(feature = "ahash")))]
+type DefaultInlineHasher = RandomState;
+
 #[derive(Clone)]
-pub enum SmallMap<const N: usize, K, V, S = RandomState> {
+pub enum SmallMap<const N: usize, K, V, S = RandomState, SI = DefaultInlineHasher> {
     Heap(HashMap<K, V, S>),
-    Inline(Inline<N, K, V, S>),
+    Inline(Inline<N, K, V, S, SI>),
 }
 
-impl<const N: usize, K, V, S> Debug for SmallMap<N, K, V, S>
+impl<const N: usize, K, V, S, SI> Debug for SmallMap<N, K, V, S, SI>
 where
     K: Debug,
     V: Debug,
@@ -68,8 +75,8 @@ where
     }
 }
 
-impl<const N: usize, K, V, S: Default> Default for SmallMap<N, K, V, S> {
-    /// Creates an empty `SmallMap<N, K, V, S>`, with the `Default` value for the hasher.
+impl<const N: usize, K, V, S: Default, SI: Default> Default for SmallMap<N, K, V, S, SI> {
+    /// Creates an empty `SmallMap<N, K, V, S, SI>`, with the `Default` value for the hasher.
     ///
     /// # Examples
     ///
@@ -87,15 +94,15 @@ impl<const N: usize, K, V, S: Default> Default for SmallMap<N, K, V, S> {
     /// ```
     #[inline]
     fn default() -> Self {
-        Self::with_hasher(Default::default())
+        Self::with_hashers(Default::default(), Default::default())
     }
 }
 
-impl<const N: usize, K, V, S: Default> SmallMap<N, K, V, S> {
+impl<const N: usize, K, V, S: Default, SI: Default> SmallMap<N, K, V, S, SI> {
     /// Creates an empty `SmallMap`.
     #[inline]
     pub fn new() -> Self {
-        Self::with_hasher(Default::default())
+        Self::with_hashers(Default::default(), Default::default())
     }
 
     /// Creates an empty `SmallMap` with the specified capacity.
@@ -110,12 +117,12 @@ impl<const N: usize, K, V, S: Default> SmallMap<N, K, V, S> {
                 Default::default(),
             ))
         } else {
-            Self::Inline(Inline::new(Default::default()))
+            Self::Inline(Inline::new(Default::default(), Default::default()))
         }
     }
 }
 
-impl<const N: usize, K, V, S> SmallMap<N, K, V, S> {
+impl<const N: usize, K, V, S, SI> SmallMap<N, K, V, S, SI> {
     /// Creates an empty `SmallMap` which will use the given hash builder to hash
     /// keys. It will be allocated with the given allocator.
     ///
@@ -133,21 +140,67 @@ impl<const N: usize, K, V, S> SmallMap<N, K, V, S> {
     /// map.insert(1, 2);
     /// ```
     #[inline]
-    pub const fn with_hasher(hash_builder: S) -> Self {
-        Self::Inline(Inline::new(hash_builder))
+    pub fn with_hasher(hash_builder: S) -> Self
+    where
+        SI: Default,
+    {
+        Self::Inline(Inline::new(SI::default(), hash_builder))
     }
 
-    /// Creates an empty `SmallMap` with the specified capacity, using `hash_builder`
+    /// Creates an empty `SmallMap` which will use the given hash builders to hash
+    /// keys. It will be allocated with the given allocator.
+    /// # Examples
+    /// ```
+    /// use std::collections::hash_map::RandomState;
+    ///
+    /// use small_map::SmallMap;
+    /// let heap_hasher = RandomState::new();
+    /// let inline_hasher = RandomState::new();
+    /// let mut map = SmallMap::<8, _, _, _, _>::with_hashers(heap_hasher, inline_hasher);
+    /// map.insert(1, 2);
+    /// ```
+    #[inline]
+    pub const fn with_hashers(heap_hasher: S, inline_hasher: SI) -> Self {
+        Self::Inline(Inline::new(inline_hasher, heap_hasher))
+    }
+
+    /// Creates an empty `SmallMap` with the specified capacity, using `heap_hasher`
     /// to hash the keys.
     ///
     /// The hash map will be able to hold at least `capacity` elements without
     /// reallocating. If `capacity` is smaller than or eq to N, the hash map will not allocate.
     #[inline]
-    pub fn with_capacity_and_hasher(capacity: usize, hash_builder: S) -> Self {
+    pub fn with_capacity_and_hasher(capacity: usize, heap_hasher: S) -> Self
+    where
+        SI: Default,
+    {
         if capacity > N {
-            Self::Heap(HashMap::with_capacity_and_hasher(capacity, hash_builder))
+            Self::Heap(HashMap::with_capacity_and_hasher(capacity, heap_hasher))
         } else {
-            Self::Inline(Inline::new(hash_builder))
+            Self::Inline(Inline::new(SI::default(), heap_hasher))
+        }
+    }
+
+    /// Creates an empty `SmallMap` with the specified capacity, using `heap_hasher`
+    /// to hash the keys for heap storage, and `inline_hasher` for inline storage.
+    ///
+    /// # Examples
+    /// ```
+    /// use std::collections::hash_map::RandomState;
+    ///
+    /// use small_map::SmallMap;
+    /// let heap_hasher = RandomState::new();
+    /// let inline_hasher = RandomState::new();
+    /// let mut map =
+    ///     SmallMap::<8, _, _, _, _>::with_capacity_and_hashers(16, heap_hasher, inline_hasher);
+    /// map.insert(1, 2);
+    /// ```
+    #[inline]
+    pub fn with_capacity_and_hashers(capacity: usize, heap_hasher: S, inline_hasher: SI) -> Self {
+        if capacity > N {
+            Self::Heap(HashMap::with_capacity_and_hasher(capacity, heap_hasher))
+        } else {
+            Self::Inline(Inline::new(inline_hasher, heap_hasher))
         }
     }
 
@@ -184,10 +237,11 @@ impl<const N: usize, K, V, S> SmallMap<N, K, V, S> {
     }
 }
 
-impl<const N: usize, K, V, S> SmallMap<N, K, V, S>
+impl<const N: usize, K, V, S, SI> SmallMap<N, K, V, S, SI>
 where
     K: Eq + Hash,
     S: BuildHasher,
+    SI: BuildHasher,
 {
     /// Returns a reference to the value corresponding to the key.
     ///
@@ -303,7 +357,8 @@ where
                 if raw::util::likely(!inner.is_full()) {
                     return inner.insert(key, value);
                 }
-                let heap = HashMap::with_capacity_and_hasher(N + 1, unsafe { inner.take_hasher() });
+                let heap =
+                    HashMap::with_capacity_and_hasher(N * 2, unsafe { inner.take_heap_hasher() });
 
                 let heap = match core::mem::replace(self, SmallMap::Heap(heap)) {
                     SmallMap::Heap(_) => unsafe { unreachable_unchecked() },
@@ -402,13 +457,10 @@ where
     }
 }
 
-impl<const N: usize, K, V, S> SmallMap<N, K, V, S>
-where
-    S: Clone,
-{
+impl<const N: usize, K, V, S, SI> SmallMap<N, K, V, S, SI> {
     /// Clears the map.
     ///
-    /// This method clears the map as resets it to the Inline state.
+    /// This method clears the map and keeps the allocated memory for reuse.
     ///
     /// # Examples
     ///
@@ -423,18 +475,23 @@ where
     /// assert_eq!(map.len(), 16);
     ///
     /// map.clear();
-    /// assert!(map.is_inline());
+    /// assert!(!map.is_inline());
     /// assert_eq!(map.len(), 0);
     /// ```
     #[inline]
     pub fn clear(&mut self) {
-        let hash_builder = match self {
-            // Too bad there's no HashMap::take_hasher()
-            SmallMap::Heap(inner) => inner.hasher().clone(),
+        match self {
+            SmallMap::Heap(inner) => {
+                inner.clear();
+            }
             // Safety: We're about to destroy this inner, so it doesn't need its hasher
-            SmallMap::Inline(inner) => unsafe { inner.take_hasher() },
-        };
-        *self = Self::Inline(Inline::new(hash_builder))
+            SmallMap::Inline(inner) => unsafe {
+                *self = Self::Inline(Inline::new(
+                    inner.take_inline_hasher(),
+                    inner.take_heap_hasher(),
+                ))
+            },
+        }
     }
 }
 
@@ -630,9 +687,10 @@ impl<const N: usize, K, V> ExactSizeIterator for IntoIter<N, K, V> {
         }
     }
 }
+
 impl<const N: usize, K, V> FusedIterator for IntoIter<N, K, V> {}
 
-impl<const N: usize, K, V, S> IntoIterator for SmallMap<N, K, V, S> {
+impl<const N: usize, K, V, S, SI> IntoIterator for SmallMap<N, K, V, S, SI> {
     type Item = (K, V);
     type IntoIter = IntoIter<N, K, V>;
 
@@ -648,7 +706,7 @@ impl<const N: usize, K, V, S> IntoIterator for SmallMap<N, K, V, S> {
     }
 }
 
-impl<'a, const N: usize, K, V, S> IntoIterator for &'a SmallMap<N, K, V, S> {
+impl<'a, const N: usize, K, V, S, SI> IntoIterator for &'a SmallMap<N, K, V, S, SI> {
     type Item = (&'a K, &'a V);
     type IntoIter = Iter<'a, N, K, V>;
 
@@ -663,7 +721,7 @@ impl<'a, const N: usize, K, V, S> IntoIterator for &'a SmallMap<N, K, V, S> {
     }
 }
 
-impl<const N: usize, K, V, S> SmallMap<N, K, V, S> {
+impl<const N: usize, K, V, S, SI> SmallMap<N, K, V, S, SI> {
     /// Returns the number of elements in the map.
     ///
     /// # Examples
@@ -809,11 +867,12 @@ impl<const N: usize, K, V, S> SmallMap<N, K, V, S> {
 }
 
 // PartialEq implementation
-impl<const N: usize, K, V, S> PartialEq for SmallMap<N, K, V, S>
+impl<const N: usize, K, V, S, SI> PartialEq for SmallMap<N, K, V, S, SI>
 where
     K: Eq + Hash,
     V: PartialEq,
     S: BuildHasher,
+    SI: BuildHasher,
 {
     fn eq(&self, other: &Self) -> bool {
         if self.len() != other.len() {
@@ -824,20 +883,22 @@ where
     }
 }
 
-impl<const N: usize, K, V, S> Eq for SmallMap<N, K, V, S>
+impl<const N: usize, K, V, S, SI> Eq for SmallMap<N, K, V, S, SI>
 where
     K: Eq + Hash,
     V: Eq,
     S: BuildHasher,
+    SI: BuildHasher,
 {
 }
 
 // Index implementation
-impl<const N: usize, K, V, S, Q> Index<&Q> for SmallMap<N, K, V, S>
+impl<const N: usize, K, V, S, SI, Q> Index<&Q> for SmallMap<N, K, V, S, SI>
 where
     K: Eq + Hash,
     Q: ?Sized + Hash + Equivalent<K>,
     S: BuildHasher,
+    SI: BuildHasher,
 {
     type Output = V;
 
@@ -853,10 +914,11 @@ where
 }
 
 // Extend implementation
-impl<const N: usize, K, V, S> Extend<(K, V)> for SmallMap<N, K, V, S>
+impl<const N: usize, K, V, S, SI> Extend<(K, V)> for SmallMap<N, K, V, S, SI>
 where
     K: Eq + Hash,
     S: BuildHasher,
+    SI: BuildHasher,
 {
     #[inline]
     fn extend<T: IntoIterator<Item = (K, V)>>(&mut self, iter: T) {
@@ -867,10 +929,11 @@ where
 }
 
 // FromIterator implementation
-impl<const N: usize, K, V, S> FromIterator<(K, V)> for SmallMap<N, K, V, S>
+impl<const N: usize, K, V, S, SI> FromIterator<(K, V)> for SmallMap<N, K, V, S, SI>
 where
     K: Eq + Hash,
     S: BuildHasher + Default,
+    SI: BuildHasher + Default,
 {
     fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
         let mut map = SmallMap::new();
@@ -938,14 +1001,14 @@ mod tests {
     }
 
     #[test]
-    fn clear_to_inline() {
+    fn clear_keep_state() {
         let mut map = SmallMap::<16, i32, i32>::default();
         for i in 0..32 {
             map.insert(i, i * 2);
         }
         assert!(!map.is_inline());
         map.clear();
-        assert!(map.is_inline());
+        assert!(!map.is_inline());
     }
 
     #[test]
