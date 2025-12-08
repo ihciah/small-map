@@ -14,6 +14,35 @@ use crate::{
     Equivalent,
 };
 
+/// Lazy hash computation - computes hash only when needed and caches the result.
+enum HashValue<F> {
+    Pending(F),
+    Computed(u64),
+}
+
+impl<F: FnOnce() -> u64> HashValue<F> {
+    #[inline]
+    fn new(f: F) -> Self {
+        Self::Pending(f)
+    }
+
+    #[inline]
+    fn get(&mut self) -> u64 {
+        match self {
+            Self::Pending(_) => {
+                let f = match core::mem::replace(self, Self::Computed(0)) {
+                    Self::Pending(f) => f,
+                    Self::Computed(_) => unsafe { core::hint::unreachable_unchecked() },
+                };
+                let hash = f();
+                *self = Self::Computed(hash);
+                hash
+            }
+            Self::Computed(hash) => *hash,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Inline<const N: usize, K, V, S, SI> {
     raw: RawInline<N, (K, V)>,
@@ -87,9 +116,9 @@ impl<const N: usize, T> RawInline<N, T> {
     /// Searches for an element. Uses linear search for small N/len, SIMD otherwise.
     /// Hash is computed lazily only when SIMD path is taken.
     #[inline]
-    fn find(
+    fn find<F: FnOnce() -> u64>(
         &self,
-        hasher: impl FnOnce() -> u64,
+        hash: &mut HashValue<F>,
         mut eq: impl FnMut(&T) -> bool,
     ) -> Option<Bucket<T>> {
         if N <= Self::USE_LINEAR_THRESHOLD || self.len <= Self::USE_LINEAR_THRESHOLD {
@@ -103,7 +132,7 @@ impl<const N: usize, T> RawInline<N, T> {
         } else {
             // SIMD search based on len
             unsafe {
-                let h2_hash = h2(hasher());
+                let h2_hash = h2(hash.get());
                 let full_groups = self.len / Group::WIDTH;
                 let mut probe_pos = 0;
 
@@ -143,8 +172,7 @@ impl<const N: usize, T> RawInline<N, T> {
         bucket
     }
 
-    /// Inserts a new element into the table in the given slot, and returns its
-    /// raw bucket.
+    /// Records an item insertion at the given index.
     #[inline]
     unsafe fn record_item_insert_at(&mut self, index: usize, hash: u64) {
         self.set_ctrl_h2(index, hash);
@@ -161,13 +189,12 @@ impl<const N: usize, T> RawInline<N, T> {
 
     /// Finds and removes an element from the table.
     #[inline]
-    fn remove_entry(
+    fn remove_entry<F: FnOnce() -> u64>(
         &mut self,
-        hasher: impl FnOnce() -> u64,
+        hash: &mut HashValue<F>,
         eq: impl FnMut(&T) -> bool,
     ) -> Option<T> {
-        // Avoid `Option::map` because it bloats LLVM IR.
-        match self.find(hasher, eq) {
+        match self.find(hash, eq) {
             Some(bucket) => Some(unsafe { self.remove(bucket).0 }),
             None => None,
         }
@@ -192,17 +219,19 @@ impl<const N: usize, T> RawInline<N, T> {
     }
 
     /// Erases the element at index using swap-delete.
-    /// Swaps with the last element to maintain contiguous storage.
+    /// Copies the last element to index position to maintain contiguous storage.
+    /// Caller must ensure the value at index has been moved out or dropped.
     #[inline]
     unsafe fn erase(&mut self, index: usize) {
         let last = self.len - 1;
         if index != last {
-            // Swap data
-            core::ptr::swap(self.data[index].as_mut_ptr(), self.data[last].as_mut_ptr());
-            // Swap control bytes (h2 values)
-            self.aligned_groups.groups.swap(index, last);
+            core::ptr::copy_nonoverlapping(
+                self.data[last].as_ptr(),
+                self.data[index].as_mut_ptr(),
+                1,
+            );
+            self.aligned_groups.groups[index] = self.aligned_groups.groups[last];
         }
-        // No need to clear ctrl[last] - len tracks validity
         self.len -= 1;
     }
 
@@ -232,21 +261,10 @@ impl<const N: usize, K, V> RawInline<N, (K, V)> {
             if f(k, v) {
                 i += 1;
             } else {
-                // Drop the element
-                unsafe { core::ptr::drop_in_place(self.data[i].as_mut_ptr()) };
-                // Swap-delete: move last element to this position
-                let last = self.len - 1;
-                if i != last {
-                    unsafe {
-                        core::ptr::copy_nonoverlapping(
-                            self.data[last].as_ptr(),
-                            self.data[i].as_mut_ptr(),
-                            1,
-                        );
-                    }
-                    self.aligned_groups.groups[i] = self.aligned_groups.groups[last];
+                unsafe {
+                    core::ptr::drop_in_place(self.data[i].as_mut_ptr());
+                    self.erase(i);
                 }
-                self.len -= 1;
                 // Don't increment i, check the swapped element
             }
         }
@@ -289,6 +307,17 @@ impl<'a, const N: usize, K, V> ExactSizeIterator for Iter<'a, N, K, V> {
 }
 
 impl<'a, const N: usize, K, V> FusedIterator for Iter<'a, N, K, V> {}
+
+impl<'a, const N: usize, K, V> Clone for Iter<'a, N, K, V> {
+    #[inline]
+    fn clone(&self) -> Self {
+        Self {
+            data: self.data,
+            index: self.index,
+            len: self.len,
+        }
+    }
+}
 
 /// Owning iterator over key-value pairs.
 pub struct IntoIter<const N: usize, K, V> {
@@ -340,6 +369,7 @@ impl<const N: usize, K, V, S, SI> IntoIterator for Inline<N, K, V, S, SI> {
     type Item = (K, V);
     type IntoIter = IntoIter<N, K, V>;
 
+    #[inline]
     fn into_iter(self) -> Self::IntoIter {
         let iter = IntoIter {
             data: unsafe { core::ptr::read(&self.raw.data) },
@@ -459,18 +489,33 @@ where
     #[inline]
     pub(crate) fn insert(&mut self, k: K, v: V) -> Option<V> {
         let hash_builder = self.inline_hasher.as_ref().unwrap();
-        let hasher = || make_hash::<K, SI>(hash_builder, &k);
-        match self.raw.find(hasher, equivalent_key(&k)) {
+        let mut hash = HashValue::new(|| make_hash::<K, SI>(hash_builder, &k));
+        match self.raw.find(&mut hash, equivalent_key(&k)) {
             Some(bucket) => Some(mem::replace(unsafe { &mut bucket.as_mut().1 }, v)),
             None => {
-                let hash = make_hash::<K, SI>(hash_builder, &k);
                 let slot = InsertSlot {
                     index: self.raw.len,
                 };
-                unsafe { self.raw.insert_in_slot(hash, slot, (k, v)) };
+                unsafe { self.raw.insert_in_slot(hash.get(), slot, (k, v)) };
                 None
             }
         }
+    }
+
+    /// Inserts a key-value pair into the map without checking if the key already exists.
+    ///
+    /// # Safety
+    /// The caller must ensure that the key does not already exist in the map.
+    #[inline]
+    pub(crate) unsafe fn insert_unique_unchecked(&mut self, k: K, v: V) -> (&K, &mut V) {
+        let hash_builder = self.inline_hasher.as_ref().unwrap();
+        let hash = make_hash::<K, SI>(hash_builder, &k);
+        let slot = InsertSlot {
+            index: self.raw.len,
+        };
+        let bucket = self.raw.insert_in_slot(hash, slot, (k, v));
+        let (k, v) = bucket.as_mut();
+        (k, v)
     }
 
     /// Removes a key from the map, returning the stored key and value if the
@@ -481,8 +526,8 @@ where
         Q: ?Sized + Hash + Equivalent<K>,
     {
         let hash_builder = self.inline_hasher.as_ref().unwrap();
-        let hasher = || make_hash::<Q, SI>(hash_builder, k);
-        self.raw.remove_entry(hasher, equivalent_key(k))
+        let mut hash = HashValue::new(|| make_hash::<Q, SI>(hash_builder, k));
+        self.raw.remove_entry(&mut hash, equivalent_key(k))
     }
 
     /// Retains only the elements specified by the predicate.
@@ -502,8 +547,8 @@ where
         if self.is_empty() {
             return None;
         }
-        let hasher = || make_hash::<Q, SI>(self.inline_hasher(), k);
-        match self.raw.find(hasher, equivalent_key(k)) {
+        let mut hash = HashValue::new(|| make_hash::<Q, SI>(self.inline_hasher(), k));
+        match self.raw.find(&mut hash, equivalent_key(k)) {
             Some(bucket) => Some(unsafe { bucket.as_ref() }),
             None => None,
         }
@@ -518,8 +563,8 @@ where
             return None;
         }
         let hash_builder = self.inline_hasher.as_ref().unwrap();
-        let hasher = || make_hash::<Q, SI>(hash_builder, k);
-        match self.raw.find(hasher, equivalent_key(k)) {
+        let mut hash = HashValue::new(|| make_hash::<Q, SI>(hash_builder, k));
+        match self.raw.find(&mut hash, equivalent_key(k)) {
             Some(bucket) => Some(unsafe { bucket.as_mut() }),
             None => None,
         }

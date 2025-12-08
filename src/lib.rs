@@ -357,25 +357,67 @@ where
                 if raw::util::likely(!inner.is_full()) {
                     return inner.insert(key, value);
                 }
-                let heap =
-                    HashMap::with_capacity_and_hasher(N * 2, unsafe { inner.take_heap_hasher() });
+                // SAFETY: We just checked that inline is full.
+                unsafe { self.spill_to_heap() }.insert(key, value)
+            }
+        }
+    }
 
-                let heap = match core::mem::replace(self, SmallMap::Heap(heap)) {
-                    SmallMap::Heap(_) => unsafe { unreachable_unchecked() },
-                    SmallMap::Inline(inline) => {
-                        let heap = match self {
-                            SmallMap::Heap(heap) => heap,
-                            SmallMap::Inline(_) => unsafe { unreachable_unchecked() },
-                        };
-                        for (k, v) in inline.into_iter() {
-                            // SAFETY: We're moving elements from inline storage to heap.
-                            // All keys are unique because they came from a valid map.
-                            unsafe { heap.insert_unique_unchecked(k, v) };
-                        }
-                        heap
-                    }
+    /// Inserts a key-value pair into the map without checking if the key already exists.
+    ///
+    /// Returns a reference to the key and a mutable reference to the value.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that the key does not already exist in the map.
+    /// Inserting a duplicate key will result in undefined behavior (e.g., memory leaks,
+    /// incorrect iteration, or other inconsistencies).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use small_map::SmallMap;
+    ///
+    /// let mut map: SmallMap<8, i32, &str> = SmallMap::new();
+    /// // SAFETY: We know the key doesn't exist because the map is empty.
+    /// unsafe { map.insert_unique_unchecked(1, "a") };
+    /// assert_eq!(map.get(&1), Some(&"a"));
+    /// ```
+    #[inline]
+    pub unsafe fn insert_unique_unchecked(&mut self, key: K, value: V) -> (&K, &mut V) {
+        let needs_spill = matches!(self, SmallMap::Inline(inner) if inner.is_full());
+        if needs_spill {
+            return self.spill_to_heap().insert_unique_unchecked(key, value);
+        }
+        match self {
+            SmallMap::Heap(inner) => inner.insert_unique_unchecked(key, value),
+            SmallMap::Inline(inner) => inner.insert_unique_unchecked(key, value),
+        }
+    }
+
+    /// Spills inline storage to heap. Returns mutable reference to the heap HashMap.
+    /// Only call when self is Inline and is full.
+    #[cold]
+    #[inline(never)]
+    unsafe fn spill_to_heap(&mut self) -> &mut HashMap<K, V, S> {
+        let heap = match self {
+            SmallMap::Inline(inner) => {
+                HashMap::with_capacity_and_hasher(N * 2, inner.take_heap_hasher())
+            }
+            SmallMap::Heap(_) => unreachable_unchecked(),
+        };
+
+        match core::mem::replace(self, SmallMap::Heap(heap)) {
+            SmallMap::Heap(_) => unreachable_unchecked(),
+            SmallMap::Inline(inline) => {
+                let heap = match self {
+                    SmallMap::Heap(heap) => heap,
+                    SmallMap::Inline(_) => unreachable_unchecked(),
                 };
-                heap.insert(key, value)
+                for (k, v) in inline.into_iter() {
+                    heap.insert_unique_unchecked(k, v);
+                }
+                heap
             }
         }
     }
@@ -530,6 +572,16 @@ impl<const N: usize, K, V> ExactSizeIterator for Iter<'_, N, K, V> {
 }
 
 impl<const N: usize, K, V> FusedIterator for Iter<'_, N, K, V> {}
+
+impl<'a, const N: usize, K, V> Clone for Iter<'a, N, K, V> {
+    #[inline]
+    fn clone(&self) -> Self {
+        match self {
+            Iter::Heap(inner) => Iter::Heap(inner.clone()),
+            Iter::Inline(inner) => Iter::Inline(inner.clone()),
+        }
+    }
+}
 
 /// An iterator over the keys of a `SmallMap`.
 pub struct Keys<'a, const N: usize, K, V> {
@@ -1390,5 +1442,407 @@ mod tests {
 
         map.retain(|&k, _| k % 2 == 0);
         assert_eq!(map.len(), 5);
+    }
+
+    #[test]
+    fn insert_unique_unchecked_test() {
+        let mut map: SmallMap<8, i32, i32> = SmallMap::new();
+
+        // Insert using unsafe method
+        unsafe {
+            map.insert_unique_unchecked(1, 10);
+            map.insert_unique_unchecked(2, 20);
+            map.insert_unique_unchecked(3, 30);
+        }
+
+        assert_eq!(map.len(), 3);
+        assert_eq!(map.get(&1), Some(&10));
+        assert_eq!(map.get(&2), Some(&20));
+        assert_eq!(map.get(&3), Some(&30));
+    }
+
+    #[test]
+    fn insert_unique_unchecked_spill_test() {
+        let mut map: SmallMap<4, i32, i32> = SmallMap::new();
+
+        // Fill inline storage
+        for i in 0..4 {
+            unsafe { map.insert_unique_unchecked(i, i * 10) };
+        }
+        assert!(map.is_inline());
+
+        // Spill to heap
+        unsafe { map.insert_unique_unchecked(4, 40) };
+        assert!(!map.is_inline());
+
+        // Verify all elements
+        for i in 0..5 {
+            assert_eq!(map.get(&i), Some(&(i * 10)));
+        }
+    }
+
+    #[test]
+    fn single_element_operations() {
+        let mut map: SmallMap<8, i32, i32> = SmallMap::new();
+
+        // Insert single
+        map.insert(42, 420);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get(&42), Some(&420));
+
+        // Update single
+        map.insert(42, 421);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get(&42), Some(&421));
+
+        // Remove single
+        assert_eq!(map.remove(&42), Some(421));
+        assert_eq!(map.len(), 0);
+        assert!(map.is_empty());
+
+        // Get from empty
+        assert_eq!(map.get(&42), None);
+    }
+
+    #[test]
+    fn min_capacity_n1() {
+        let mut map: SmallMap<1, i32, i32> = SmallMap::new();
+
+        map.insert(1, 10);
+        assert_eq!(map.len(), 1);
+        assert!(map.is_inline());
+
+        // Spill to heap on second insert
+        map.insert(2, 20);
+        assert_eq!(map.len(), 2);
+        assert!(!map.is_inline());
+
+        assert_eq!(map.get(&1), Some(&10));
+        assert_eq!(map.get(&2), Some(&20));
+    }
+
+    #[test]
+    fn linear_search_threshold() {
+        // Test with N <= Group::WIDTH (16 on SSE2, 8 on NEON)
+        // This should use linear search
+        let mut map: SmallMap<8, i32, i32> = SmallMap::new();
+
+        for i in 0..8 {
+            map.insert(i, i * 10);
+        }
+
+        // All lookups should work (linear search path)
+        for i in 0..8 {
+            assert_eq!(map.get(&i), Some(&(i * 10)));
+        }
+
+        // Non-existent keys
+        assert_eq!(map.get(&100), None);
+        assert_eq!(map.get(&-1), None);
+    }
+
+    #[test]
+    fn simd_search_path() {
+        // Test with N > Group::WIDTH to trigger SIMD path
+        let mut map: SmallMap<32, i32, i32> = SmallMap::new();
+
+        for i in 0..32 {
+            map.insert(i, i * 10);
+        }
+
+        // All lookups should work (SIMD search path)
+        for i in 0..32 {
+            assert_eq!(map.get(&i), Some(&(i * 10)));
+        }
+
+        // Non-existent keys
+        assert_eq!(map.get(&100), None);
+    }
+
+    #[test]
+    fn iterator_clone() {
+        let mut map: SmallMap<8, i32, i32> = SmallMap::new();
+        for i in 0..5 {
+            map.insert(i, i * 10);
+        }
+
+        let iter = map.iter();
+        let cloned_iter = iter.clone();
+
+        let items1: Vec<_> = iter.collect();
+        let items2: Vec<_> = cloned_iter.collect();
+
+        assert_eq!(items1.len(), items2.len());
+    }
+
+    #[test]
+    fn get_key_value_test() {
+        let mut map: SmallMap<8, String, i32> = SmallMap::new();
+        map.insert("hello".to_string(), 42);
+
+        let (k, v) = map.get_key_value("hello").unwrap();
+        assert_eq!(k, "hello");
+        assert_eq!(*v, 42);
+
+        assert!(map.get_key_value("world").is_none());
+    }
+
+    #[test]
+    fn get_mut_modify() {
+        let mut map: SmallMap<8, i32, Vec<i32>> = SmallMap::new();
+        map.insert(1, vec![1, 2, 3]);
+
+        if let Some(v) = map.get_mut(&1) {
+            v.push(4);
+            v.push(5);
+        }
+
+        assert_eq!(map.get(&1), Some(&vec![1, 2, 3, 4, 5]));
+    }
+
+    #[test]
+    fn retain_all() {
+        let mut map: SmallMap<8, i32, i32> = SmallMap::new();
+        for i in 0..5 {
+            map.insert(i, i);
+        }
+
+        map.retain(|_, _| true);
+        assert_eq!(map.len(), 5);
+    }
+
+    #[test]
+    fn retain_none() {
+        let mut map: SmallMap<8, i32, i32> = SmallMap::new();
+        for i in 0..5 {
+            map.insert(i, i);
+        }
+
+        map.retain(|_, _| false);
+        assert_eq!(map.len(), 0);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn retain_modify_value() {
+        let mut map: SmallMap<8, i32, i32> = SmallMap::new();
+        for i in 0..5 {
+            map.insert(i, i);
+        }
+
+        map.retain(|_, v| {
+            *v *= 10;
+            true
+        });
+
+        for i in 0..5 {
+            assert_eq!(map.get(&i), Some(&(i * 10)));
+        }
+    }
+
+    #[test]
+    fn swap_delete_order_preservation() {
+        // Test that swap-delete doesn't break iteration
+        let mut map: SmallMap<8, i32, i32> = SmallMap::new();
+        for i in 0..5 {
+            map.insert(i, i * 10);
+        }
+
+        // Remove middle element
+        map.remove(&2);
+
+        // Remaining elements should still be accessible
+        assert_eq!(map.get(&0), Some(&0));
+        assert_eq!(map.get(&1), Some(&10));
+        assert_eq!(map.get(&2), None);
+        assert_eq!(map.get(&3), Some(&30));
+        assert_eq!(map.get(&4), Some(&40));
+
+        // Iteration should yield 4 elements
+        assert_eq!(map.iter().count(), 4);
+    }
+
+    #[test]
+    fn repeated_insert_remove() {
+        let mut map: SmallMap<4, i32, i32> = SmallMap::new();
+
+        for _ in 0..100 {
+            map.insert(1, 10);
+            map.insert(2, 20);
+            map.insert(3, 30);
+            assert_eq!(map.len(), 3);
+
+            map.remove(&2);
+            assert_eq!(map.len(), 2);
+            assert_eq!(map.get(&1), Some(&10));
+            assert_eq!(map.get(&3), Some(&30));
+
+            map.remove(&1);
+            map.remove(&3);
+            assert!(map.is_empty());
+        }
+    }
+
+    #[test]
+    fn remove_nonexistent() {
+        let mut map: SmallMap<8, i32, i32> = SmallMap::new();
+        map.insert(1, 10);
+
+        assert_eq!(map.remove(&999), None);
+        assert_eq!(map.remove_entry(&999), None);
+        assert_eq!(map.len(), 1);
+    }
+
+    #[test]
+    fn capacity_boundary() {
+        let mut map: SmallMap<8, i32, i32> = SmallMap::new();
+
+        // Fill to capacity
+        for i in 0..8 {
+            map.insert(i, i);
+        }
+        assert!(map.is_inline());
+        assert_eq!(map.capacity(), 8);
+
+        // One more triggers spill
+        map.insert(8, 8);
+        assert!(!map.is_inline());
+        assert!(map.capacity() >= 9);
+    }
+
+    #[test]
+    fn with_capacity_inline() {
+        let map: SmallMap<16, i32, i32> = SmallMap::with_capacity(8);
+        assert!(map.is_inline());
+        assert_eq!(map.capacity(), 16);
+    }
+
+    #[test]
+    fn with_capacity_heap() {
+        let map: SmallMap<8, i32, i32> = SmallMap::with_capacity(100);
+        assert!(!map.is_inline());
+        assert!(map.capacity() >= 100);
+    }
+
+    #[test]
+    fn empty_map_operations() {
+        let map: SmallMap<8, i32, i32> = SmallMap::new();
+
+        assert!(map.is_empty());
+        assert_eq!(map.len(), 0);
+        assert_eq!(map.get(&1), None);
+        assert!(!map.contains_key(&1));
+        assert_eq!(map.iter().count(), 0);
+        assert_eq!(map.keys().count(), 0);
+        assert_eq!(map.values().count(), 0);
+    }
+
+    #[test]
+    fn string_keys() {
+        let mut map: SmallMap<8, String, i32> = SmallMap::new();
+
+        map.insert("alpha".to_string(), 1);
+        map.insert("beta".to_string(), 2);
+        map.insert("gamma".to_string(), 3);
+
+        // Query with &str (Equivalent trait)
+        assert_eq!(map.get("alpha"), Some(&1));
+        assert_eq!(map.get("beta"), Some(&2));
+        assert_eq!(map.get("gamma"), Some(&3));
+        assert_eq!(map.get("delta"), None);
+
+        assert_eq!(map.remove("beta"), Some(2));
+        assert_eq!(map.get("beta"), None);
+    }
+
+    #[test]
+    fn update_existing_key() {
+        let mut map: SmallMap<8, i32, String> = SmallMap::new();
+
+        map.insert(1, "first".to_string());
+        assert_eq!(map.insert(1, "second".to_string()), Some("first".to_string()));
+        assert_eq!(map.get(&1), Some(&"second".to_string()));
+        assert_eq!(map.len(), 1);
+    }
+
+    #[test]
+    fn large_n_inline() {
+        let mut map: SmallMap<256, i32, i32> = SmallMap::new();
+
+        for i in 0..256 {
+            map.insert(i, i * 2);
+        }
+
+        assert!(map.is_inline());
+        assert_eq!(map.len(), 256);
+
+        for i in 0..256 {
+            assert_eq!(map.get(&i), Some(&(i * 2)));
+        }
+    }
+
+    #[test]
+    fn iter_after_partial_remove() {
+        let mut map: SmallMap<8, i32, i32> = SmallMap::new();
+        for i in 0..8 {
+            map.insert(i, i);
+        }
+
+        // Remove every other element
+        for i in (0..8).step_by(2) {
+            map.remove(&i);
+        }
+
+        let items: Vec<_> = map.iter().map(|(&k, &v)| (k, v)).collect();
+        assert_eq!(items.len(), 4);
+
+        // Verify remaining elements
+        for (k, v) in items {
+            assert_eq!(k % 2, 1); // Only odd keys remain
+            assert_eq!(k, v);
+        }
+    }
+
+    #[test]
+    fn into_iter_drop_partial() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+        struct DropCounter(#[allow(dead_code)] i32);
+        impl Drop for DropCounter {
+            fn drop(&mut self) {
+                DROP_COUNT.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        DROP_COUNT.store(0, Ordering::SeqCst);
+
+        let mut map: SmallMap<8, i32, DropCounter> = SmallMap::new();
+        for i in 0..5 {
+            map.insert(i, DropCounter(i));
+        }
+
+        let mut iter = map.into_iter();
+        // Consume only 2 elements
+        let _ = iter.next();
+        let _ = iter.next();
+        // Drop the iterator (should drop remaining 3)
+        drop(iter);
+
+        assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 5);
+    }
+
+    #[test]
+    fn default_hasher_types() {
+        // Test with default hasher
+        let mut map1: SmallMap<8, i32, i32> = SmallMap::new();
+        map1.insert(1, 10);
+        assert_eq!(map1.get(&1), Some(&10));
+
+        // Test with explicit RandomState
+        let mut map2: SmallMap<8, i32, i32, RandomState> = SmallMap::default();
+        map2.insert(1, 10);
+        assert_eq!(map2.get(&1), Some(&10));
     }
 }
