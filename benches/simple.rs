@@ -1,60 +1,152 @@
 use std::hint::black_box;
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
-fn smallmap<const N: usize>(n: u8) {
-    let mut map = small_map::SmallMap::<N, _, _>::default();
-    for i in 0..n {
-        map.insert(i, i);
-    }
-    for i in 0..n {
-        black_box(map.get(&i));
-    }
+macro_rules! get_set {
+    ($map:ident, $n:expr) => {
+        for i in 0..$n {
+            $map.insert(i, i);
+        }
+        for i in 0..$n {
+            black_box($map.get(&i));
+        }
+    };
 }
 
+#[inline(always)]
+fn smallmap<const N: usize, H: std::hash::BuildHasher + Default>(n: u8) {
+    let mut map = small_map::SmallMap::<N, _, _, H>::with_capacity(n as usize);
+    get_set!(map, n);
+}
+
+#[inline(always)]
 fn hashbrown(n: u8) {
     use std::collections::hash_map::RandomState;
     let mut map = hashbrown::HashMap::<_, _, RandomState>::with_capacity_and_hasher(
         n as usize,
         RandomState::default(),
     );
-    for i in 0..n {
-        map.insert(i, i);
-    }
-    for i in 0..n {
-        black_box(map.get(&i));
-    }
+    get_set!(map, n);
 }
 
+#[inline(always)]
+fn std_btreemap(n: u8) {
+    let mut map = std::collections::BTreeMap::<_, _>::new();
+    get_set!(map, n);
+}
+
+#[inline(always)]
 fn std_hashmap(n: u8) {
     let mut map =
         std::collections::HashMap::<_, _, std::collections::hash_map::RandomState>::with_capacity(
             n as usize,
         );
-    for i in 0..n {
-        map.insert(i, i);
-    }
-    for i in 0..n {
-        black_box(map.get(&i));
-    }
+    get_set!(map, n);
+}
+
+#[inline(always)]
+fn fx_hashmap(n: u8) {
+    let mut map =
+        std::collections::HashMap::with_capacity_and_hasher(n as usize, rustc_hash::FxBuildHasher);
+    get_set!(map, n);
+}
+
+#[inline(always)]
+fn micromap<const N: usize>(n: u8) {
+    let mut map = micromap::Map::<u8, u8, N>::new();
+    get_set!(map, n);
+}
+
+#[inline(always)]
+fn tinymap<const N: usize>(n: u8) {
+    let mut map = tinymap::array_map::ArrayMap::<u8, u8, N>::new();
+    get_set!(map, n);
+}
+
+#[inline(always)]
+fn litemap(n: u8) {
+    let mut map = litemap::LiteMap::<u8, u8>::with_capacity(n as usize);
+    get_set!(map, n);
 }
 
 fn criterion_benchmark(c: &mut Criterion) {
-    c.bench_function("smallmap-simple-4", |b| b.iter(|| smallmap::<16>(4)));
-    c.bench_function("hashbrown-simple-4", |b| b.iter(|| hashbrown(4)));
-    c.bench_function("stdhashmap-simple-4", |b| b.iter(|| std_hashmap(4)));
+    let micromap_threshold = 128;
+    let mut tinymap_threshold = 64;
+    macro_rules! bench_size {
+        ($group: expr, $size: expr) => {
+            bench_size!($group, $size, $size);
+        };
+        ($group: expr, $size: expr, $N: expr) => {
+            let size = $size;
+            $group.bench_with_input(
+                BenchmarkId::new("small-map::FxSmallMap ⬅", size),
+                &size,
+                |b, &n| b.iter(|| smallmap::<$N, rustc_hash::FxBuildHasher>(n)),
+            );
+            // Not run MicroMap for bigger size, as it gets very big
+            if size <= micromap_threshold {
+                $group.bench_with_input(BenchmarkId::new("micromap::Map", size), &size, |b, &n| {
+                    b.iter(|| micromap::<$size>(n))
+                });
+            }
+            // Not run ArrayMap for bigger size, as it gets very big
+            if size <= tinymap_threshold {
+                $group.bench_with_input(
+                    BenchmarkId::new("tinymap::array_map::ArrayMap", size),
+                    &size,
+                    |b, &n| b.iter(|| tinymap::<$size>(n)),
+                );
+            }
+            $group.bench_with_input(
+                BenchmarkId::new("litemap::LiteMap", size),
+                &size,
+                |b, &n| b.iter(|| litemap(n)),
+            );
+            $group.bench_with_input(
+                BenchmarkId::new("hashbrown::HashMap", size),
+                &size,
+                |b, &n| b.iter(|| hashbrown(n)),
+            );
+            $group.bench_with_input(
+                BenchmarkId::new("std::collections::HashMap", size),
+                &size,
+                |b, &n| b.iter(|| std_hashmap(n)),
+            );
+            $group.bench_with_input(
+                BenchmarkId::new("rustc_hash::FxHashMap", size),
+                &size,
+                |b, &n| b.iter(|| fx_hashmap(n)),
+            );
+            $group.bench_with_input(
+                BenchmarkId::new("std::collections::BTreeMap", size),
+                &size,
+                |b, &n| b.iter(|| std_btreemap(n)),
+            );
+        };
+    }
 
-    c.bench_function("smallmap-simple-8", |b| b.iter(|| smallmap::<16>(8)));
-    c.bench_function("hashbrown-simple-8", |b| b.iter(|| hashbrown(8)));
-    c.bench_function("stdhashmap-simple-8", |b| b.iter(|| std_hashmap(8)));
+    let mut big_group = c.benchmark_group("Maps Benchmark in 0~196 Scale");
+    bench_size!(big_group, 4);
+    bench_size!(big_group, 8);
+    bench_size!(big_group, 16);
+    bench_size!(big_group, 32, 20);
+    bench_size!(big_group, 64, 20);
+    bench_size!(big_group, 96, 20);
+    bench_size!(big_group, 128, 20);
+    bench_size!(big_group, 192, 20);
+    big_group.finish();
 
-    c.bench_function("smallmap-simple-12", |b| b.iter(|| smallmap::<16>(12)));
-    c.bench_function("hashbrown-simple-12", |b| b.iter(|| hashbrown(12)));
-    c.bench_function("stdhashmap-simple-12", |b| b.iter(|| std_hashmap(12)));
-
-    c.bench_function("smallmap-simple-16", |b| b.iter(|| smallmap::<16>(16)));
-    c.bench_function("hashbrown-simple-16", |b| b.iter(|| hashbrown(16)));
-    c.bench_function("stdhashmap-simple-16", |b| b.iter(|| std_hashmap(16)));
+    tinymap_threshold = 32;
+    let mut small_group = c.benchmark_group("Maps Benchmark in 0~64 Scale");
+    bench_size!(small_group, 4);
+    bench_size!(small_group, 8);
+    bench_size!(small_group, 12);
+    bench_size!(small_group, 16);
+    bench_size!(small_group, 20);
+    bench_size!(small_group, 32, 20);
+    bench_size!(small_group, 48, 20);
+    bench_size!(small_group, 64, 20);
+    small_group.finish();
 }
 
 #[cfg(unix)]

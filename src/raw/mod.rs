@@ -35,21 +35,21 @@ pub mod util;
 
 pub(crate) use imp::Group;
 
-// Constant for h2 function that grabing the top 7 bits of the hash.
+// Constant for h2 function that grabs the top 8 bits of the hash.
 const MIN_HASH_LEN: usize = if mem::size_of::<usize>() < mem::size_of::<u64>() {
     mem::size_of::<usize>()
 } else {
     mem::size_of::<u64>()
 };
 
-/// Secondary hash function, saved in the low 7 bits of the control byte.
+/// Secondary hash function, saved in the control byte.
+/// Uses full 8 bits since we don't need empty/deleted markers (we use len for validity).
 #[inline]
 #[allow(clippy::cast_possible_truncation)]
 pub(crate) fn h2(hash: u64) -> u8 {
-    // Grab the top 7 bits of the hash. While the hash is normally a full 64-bit
+    // Grab the top 8 bits of the hash. While the hash is normally a full 64-bit
     // value, some hash functions (such as FxHash) produce a usize result
     // instead, which means that the top 32 bits are 0 on 32-bit platforms.
     // So we use MIN_HASH_LEN constant to handle this.
-    let top7 = hash >> (MIN_HASH_LEN * 8 - 7);
-    (top7 & 0x7f) as u8 // truncation
+    (hash >> (MIN_HASH_LEN * 8 - 8)) as u8
 }

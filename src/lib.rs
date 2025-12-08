@@ -45,18 +45,25 @@ pub use hashbrown::Equivalent;
 #[cfg(feature = "serde")]
 mod serde;
 
+#[cfg(feature = "rapidhash")]
+pub type RapidSmallMap<const N: usize, K, V> = SmallMap<N, K, V, rapidhash::fast::RandomState>;
 #[cfg(feature = "fxhash")]
-pub type FxSmallMap<const N: usize, K, V> =
-    SmallMap<N, K, V, core::hash::BuildHasherDefault<rustc_hash::FxHasher>>;
+pub type FxSmallMap<const N: usize, K, V> = SmallMap<N, K, V, rustc_hash::FxBuildHasher>;
 #[cfg(feature = "ahash")]
 pub type ASmallMap<const N: usize, K, V> =
     SmallMap<N, K, V, core::hash::BuildHasherDefault<ahash::AHasher>>;
 
-#[cfg(feature = "fxhash")]
-type DefaultInlineHasher = core::hash::BuildHasherDefault<rustc_hash::FxHasher>;
-#[cfg(all(not(feature = "fxhash"), feature = "ahash"))]
+#[cfg(feature = "rapidhash")]
+type DefaultInlineHasher = rapidhash::fast::RandomState;
+#[cfg(all(not(feature = "rapidhash"), feature = "fxhash"))]
+type DefaultInlineHasher = rustc_hash::FxBuildHasher;
+#[cfg(all(not(feature = "rapidhash"), not(feature = "fxhash"), feature = "ahash"))]
 type DefaultInlineHasher = core::hash::BuildHasherDefault<ahash::AHasher>;
-#[cfg(all(not(feature = "fxhash"), not(feature = "ahash")))]
+#[cfg(all(
+    not(feature = "rapidhash"),
+    not(feature = "fxhash"),
+    not(feature = "ahash")
+))]
 type DefaultInlineHasher = RandomState;
 
 #[derive(Clone)]
@@ -131,11 +138,11 @@ impl<const N: usize, K, V, S, SI> SmallMap<N, K, V, S, SI> {
     /// # Examples
     ///
     /// ```
-    /// use core::hash::BuildHasherDefault;
+    /// use std::hash::{BuildHasherDefault, DefaultHasher};
     ///
     /// use small_map::SmallMap;
     ///
-    /// let s = BuildHasherDefault::<ahash::AHasher>::default();
+    /// let s = BuildHasherDefault::<DefaultHasher>::default();
     /// let mut map = SmallMap::<8, _, _, _>::with_hasher(s);
     /// map.insert(1, 2);
     /// ```
@@ -1760,7 +1767,10 @@ mod tests {
         let mut map: SmallMap<8, i32, String> = SmallMap::new();
 
         map.insert(1, "first".to_string());
-        assert_eq!(map.insert(1, "second".to_string()), Some("first".to_string()));
+        assert_eq!(
+            map.insert(1, "second".to_string()),
+            Some("first".to_string())
+        );
         assert_eq!(map.get(&1), Some(&"second".to_string()));
         assert_eq!(map.len(), 1);
     }

@@ -1,6 +1,6 @@
 [package]
 name = "small-map"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 
 authors = ["ChiHai <ihciah@gmail.com>"]
@@ -13,26 +13,34 @@ repository = "https://github.com/ihciah/small-map"
 
 [dependencies]
 hashbrown = { version = "0.16", features = [
+    "equivalent",
     "inline-more",
 ], default-features = false }
 
 serde = { version = "1", default-features = false, optional = true }
 ahash = { version = "0.8", default-features = false, optional = true }
 rustc-hash = { version = "2", default-features = false, optional = true }
+rapidhash = { version = "4", default-features = false, optional = true }
 
 [dev-dependencies]
 rand = { version = "0.9" }
 criterion = { version = "0.8", features = ["html_reports"] }
 
+micromap = "0.1"
+tinymap = "0.4"
+litemap = "0.8.1"
+rustc-hash = { version = "2", features = ["std"] }
+
 [target.'cfg(unix)'.dev-dependencies]
 pprof = { version = "0.15", features = ["flamegraph"] }
 
 [features]
-default = ["hashes"]
+default = ["rapidhash", "fxhash", "inline-more"]
 
-hashes = ["ahash", "fxhash"]
+hashes = ["ahash", "fxhash", "rapidhash"]
 ahash = ["dep:ahash"]
 fxhash = ["dep:rustc-hash"]
+rapidhash = ["dep:rapidhash"]
 serde = ["dep:serde", "hashbrown/serde"]
 nightly = []
 inline-more = ["hashbrown/inline-more"]
@@ -41,8 +49,15 @@ inline-more = ["hashbrown/inline-more"]
 name = "simple"
 harness = false
 path = "benches/simple.rs"
+required-features = ["fxhash"]
 
 [profile.release]
+opt-level = 3
+overflow-checks = false
+panic = "abort"
+lto = true
+
+[profile.bench]
 opt-level = 3
 overflow-checks = false
 panic = "abort"

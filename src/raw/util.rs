@@ -2,8 +2,10 @@
 // consistently improves performance by 10-15%.
 #[cfg(not(feature = "nightly"))]
 pub(crate) use core::convert::identity as likely;
+#[cfg(not(feature = "nightly"))]
+pub(crate) use core::convert::identity as unlikely;
 #[cfg(feature = "nightly")]
-pub(crate) use core::intrinsics::likely;
+pub(crate) use core::intrinsics::{likely, unlikely};
 // Use strict provenance functions if available.
 #[cfg(feature = "nightly")]
 use core::ptr::without_provenance_mut as invalid_mut;

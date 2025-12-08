@@ -8,7 +8,9 @@ use core::{
 use crate::{
     raw::{
         h2,
-        util::{equivalent_key, likely, make_hash, Bucket, InsertSlot, SizedTypeProperties},
+        util::{
+            equivalent_key, likely, make_hash, unlikely, Bucket, InsertSlot, SizedTypeProperties,
+        },
         Group,
     },
     Equivalent,
@@ -99,6 +101,9 @@ impl<const N: usize, T> Drop for RawInline<N, T> {
     }
 }
 
+/// Threshold for using linear search instead of SIMD.
+const USE_LINEAR_THRESHOLD: usize = Group::WIDTH;
+
 impl<const N: usize, T> RawInline<N, T> {
     #[inline]
     unsafe fn drop_elements(&mut self) {
@@ -110,9 +115,6 @@ impl<const N: usize, T> RawInline<N, T> {
         }
     }
 
-    /// Threshold for using linear search instead of SIMD.
-    const USE_LINEAR_THRESHOLD: usize = Group::WIDTH;
-
     /// Searches for an element. Uses linear search for small N/len, SIMD otherwise.
     /// Hash is computed lazily only when SIMD path is taken.
     #[inline]
@@ -121,7 +123,7 @@ impl<const N: usize, T> RawInline<N, T> {
         hash: &mut HashValue<F>,
         mut eq: impl FnMut(&T) -> bool,
     ) -> Option<Bucket<T>> {
-        if N <= Self::USE_LINEAR_THRESHOLD || self.len <= Self::USE_LINEAR_THRESHOLD {
+        if N < USE_LINEAR_THRESHOLD || self.len < USE_LINEAR_THRESHOLD {
             // Linear search - no hash needed
             for i in 0..self.len {
                 if eq(unsafe { self.data.get_unchecked(i).assume_init_ref() }) {
@@ -140,7 +142,8 @@ impl<const N: usize, T> RawInline<N, T> {
                     let group = Group::load(self.aligned_groups.ctrl(probe_pos));
                     for bit in group.match_byte(h2_hash) {
                         let index = probe_pos + bit;
-                        if likely(eq(self.data.get_unchecked(index).assume_init_ref())) {
+                        let item: &T = self.data.get_unchecked(index).assume_init_ref();
+                        if likely(eq(item)) {
                             return Some(self.bucket(index));
                         }
                     }
@@ -152,7 +155,8 @@ impl<const N: usize, T> RawInline<N, T> {
                     let group = Group::load(self.aligned_groups.ctrl(probe_pos));
                     for bit in group.match_byte(h2_hash).and(Group::LOWEST_MASK[tail_len]) {
                         let index = probe_pos + bit;
-                        if likely(eq(self.data.get_unchecked(index).assume_init_ref())) {
+                        let item: &T = self.data.get_unchecked(index).assume_init_ref();
+                        if likely(eq(item)) {
                             return Some(self.bucket(index));
                         }
                     }
@@ -166,25 +170,12 @@ impl<const N: usize, T> RawInline<N, T> {
     /// raw bucket.
     #[inline]
     unsafe fn insert_in_slot(&mut self, hash: u64, slot: InsertSlot, value: T) -> Bucket<T> {
-        self.record_item_insert_at(slot.index, hash);
+        // SAFETY: The caller must uphold the safety rules for the [`RawTableInner::set_ctrl_h2`]
+        *self.aligned_groups.ctrl(slot.index) = h2(hash);
+        self.len += 1;
         let bucket = self.bucket(slot.index);
         bucket.write(value);
         bucket
-    }
-
-    /// Records an item insertion at the given index.
-    #[inline]
-    unsafe fn record_item_insert_at(&mut self, index: usize, hash: u64) {
-        self.set_ctrl_h2(index, hash);
-        self.len += 1;
-    }
-
-    /// Sets a control byte to the hash, and possibly also the replicated control byte at
-    /// the end of the array.
-    #[inline]
-    unsafe fn set_ctrl_h2(&mut self, index: usize, hash: u64) {
-        // SAFETY: The caller must uphold the safety rules for the [`RawTableInner::set_ctrl_h2`]
-        *self.aligned_groups.ctrl(index) = h2(hash);
     }
 
     /// Finds and removes an element from the table.
@@ -488,16 +479,30 @@ where
     /// Inserts a key-value pair into the map.
     #[inline]
     pub(crate) fn insert(&mut self, k: K, v: V) -> Option<V> {
-        let hash_builder = self.inline_hasher.as_ref().unwrap();
-        let mut hash = HashValue::new(|| make_hash::<K, SI>(hash_builder, &k));
-        match self.raw.find(&mut hash, equivalent_key(&k)) {
-            Some(bucket) => Some(mem::replace(unsafe { &mut bucket.as_mut().1 }, v)),
-            None => {
-                let slot = InsertSlot {
-                    index: self.raw.len,
-                };
-                unsafe { self.raw.insert_in_slot(hash.get(), slot, (k, v)) };
-                None
+        if N < USE_LINEAR_THRESHOLD {
+            // Small N: use linear search, no hash needed
+            let len = self.raw.len;
+            for i in 0..len {
+                let item = unsafe { self.raw.data[i].assume_init_mut() };
+                if k.equivalent(&item.0) {
+                    return Some(mem::replace(&mut item.1, v));
+                }
+            }
+            self.raw.data[len].write((k, v));
+            self.raw.len = len + 1;
+            None
+        } else {
+            let hash_builder = self.inline_hasher.as_ref().unwrap();
+            let mut hash = HashValue::new(|| make_hash::<K, SI>(hash_builder, &k));
+            match self.raw.find(&mut hash, equivalent_key(&k)) {
+                Some(bucket) => Some(mem::replace(unsafe { &mut bucket.as_mut().1 }, v)),
+                None => {
+                    let slot = InsertSlot {
+                        index: self.raw.len,
+                    };
+                    unsafe { self.raw.insert_in_slot(hash.get(), slot, (k, v)) };
+                    None
+                }
             }
         }
     }
@@ -508,14 +513,20 @@ where
     /// The caller must ensure that the key does not already exist in the map.
     #[inline]
     pub(crate) unsafe fn insert_unique_unchecked(&mut self, k: K, v: V) -> (&K, &mut V) {
-        let hash_builder = self.inline_hasher.as_ref().unwrap();
-        let hash = make_hash::<K, SI>(hash_builder, &k);
-        let slot = InsertSlot {
-            index: self.raw.len,
-        };
-        let bucket = self.raw.insert_in_slot(hash, slot, (k, v));
-        let (k, v) = bucket.as_mut();
-        (k, v)
+        let len = self.raw.len;
+        if N <= Group::WIDTH {
+            self.raw.data[len].write((k, v));
+            self.raw.len = len + 1;
+            let item = self.raw.data[len].assume_init_mut();
+            (&item.0, &mut item.1)
+        } else {
+            let hash_builder = self.inline_hasher.as_ref().unwrap();
+            let hash = make_hash::<K, SI>(hash_builder, &k);
+            let slot = InsertSlot { index: len };
+            let bucket = self.raw.insert_in_slot(hash, slot, (k, v));
+            let (k, v) = bucket.as_mut();
+            (k, v)
+        }
     }
 
     /// Removes a key from the map, returning the stored key and value if the
@@ -544,7 +555,7 @@ where
     where
         Q: ?Sized + Hash + Equivalent<K>,
     {
-        if self.is_empty() {
+        if unlikely(self.is_empty()) {
             return None;
         }
         let mut hash = HashValue::new(|| make_hash::<Q, SI>(self.inline_hasher(), k));
@@ -559,7 +570,7 @@ where
     where
         Q: ?Sized + Hash + Equivalent<K>,
     {
-        if self.is_empty() {
+        if unlikely(self.is_empty()) {
             return None;
         }
         let hash_builder = self.inline_hasher.as_ref().unwrap();
