@@ -1,6 +1,4 @@
-use super::imp::{
-    BitMaskWord, NonZeroBitMaskWord, BITMASK_ITER_MASK, BITMASK_MASK, BITMASK_STRIDE,
-};
+use super::imp::{BitMaskWord, NonZeroBitMaskWord, BITMASK_ITER_MASK, BITMASK_STRIDE};
 
 /// A bit mask which contains the result of a `Match` operation on a `Group` and
 /// allows iterating through them.
@@ -23,14 +21,6 @@ pub(crate) struct BitMask(pub(crate) BitMaskWord);
 
 #[allow(clippy::use_self)]
 impl BitMask {
-    /// Returns a new `BitMask` with all bits inverted.
-    #[inline]
-    #[must_use]
-    #[allow(dead_code)]
-    pub(crate) fn invert(self) -> Self {
-        BitMask(self.0 ^ BITMASK_MASK)
-    }
-
     #[inline]
     pub(crate) fn and(self, n: BitMaskWord) -> Self {
         Self(self.0 & n)
@@ -41,12 +31,6 @@ impl BitMask {
     #[must_use]
     fn remove_lowest_bit(self) -> Self {
         BitMask(self.0 & (self.0 - 1))
-    }
-
-    /// Returns whether the `BitMask` has at least one set bit.
-    #[inline]
-    pub(crate) fn any_bit_set(self) -> bool {
-        self.0 != 0
     }
 
     /// Returns the first set bit in the `BitMask`, if there is one.
@@ -87,7 +71,7 @@ impl IntoIterator for BitMask {
 /// Iterator over the contents of a `BitMask`, returning the indices of set
 /// bits.
 #[derive(Copy, Clone)]
-pub(crate) struct BitMaskIter(pub(crate) BitMask);
+pub(crate) struct BitMaskIter(BitMask);
 
 impl Iterator for BitMaskIter {
     type Item = usize;

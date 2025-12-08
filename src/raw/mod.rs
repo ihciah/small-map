@@ -1,6 +1,4 @@
-use core::{marker::PhantomData, mem, ptr::NonNull};
-
-use crate::raw::util::{unlikely, SizedTypeProperties};
+use core::mem;
 
 cfg_if! {
     // Use the SSE2 implementation if possible: it allows us to scan 16 buckets
@@ -33,15 +31,9 @@ cfg_if! {
 }
 
 mod bitmask;
-pub mod iter;
 pub mod util;
 
 pub(crate) use imp::{BitMaskWord, Group};
-
-use self::{
-    bitmask::{BitMask, BitMaskIter},
-    util::Bucket,
-};
 
 // Constant for h2 function that grabing the top 7 bits of the hash.
 const MIN_HASH_LEN: usize = if mem::size_of::<usize>() < mem::size_of::<u64>() {
@@ -49,11 +41,6 @@ const MIN_HASH_LEN: usize = if mem::size_of::<usize>() < mem::size_of::<u64>() {
 } else {
     mem::size_of::<u64>()
 };
-
-/// Control byte value for an empty bucket.
-pub(crate) const EMPTY: u8 = 0b1111_1111;
-/// Control byte value for a deleted bucket.
-pub(crate) const DELETED: u8 = 0b1000_0000;
 
 /// Secondary hash function, saved in the low 7 bits of the control byte.
 #[inline]
@@ -65,69 +52,4 @@ pub(crate) fn h2(hash: u64) -> u8 {
     // So we use MIN_HASH_LEN constant to handle this.
     let top7 = hash >> (MIN_HASH_LEN * 8 - 7);
     (top7 & 0x7f) as u8 // truncation
-}
-
-pub struct RawIterInner<T> {
-    len: usize,
-    current_group: BitMaskIter,
-    group_offset: usize,
-    _marker: PhantomData<T>,
-}
-
-unsafe impl<T> Send for RawIterInner<T> {}
-unsafe impl<T> Sync for RawIterInner<T> {}
-
-impl<T> RawIterInner<T> {
-    #[inline]
-    pub(crate) unsafe fn new(init_group: BitMask, len: usize) -> Self {
-        Self {
-            len,
-            current_group: init_group.into_iter(),
-            group_offset: 0,
-            _marker: PhantomData,
-        }
-    }
-
-    #[inline]
-    unsafe fn next_impl(&mut self, group_base: NonNull<u8>, base: Bucket<T>) -> Bucket<T> {
-        loop {
-            if let Some(index) = self.current_group.next() {
-                return base.next_n(index + self.group_offset);
-            }
-
-            self.group_offset += Group::WIDTH;
-            self.current_group = Group::load_aligned(group_base.as_ptr().add(self.group_offset))
-                .match_full()
-                .into_iter();
-        }
-    }
-
-    #[inline]
-    pub(crate) fn next(&mut self, group_base: NonNull<u8>, base: Bucket<T>) -> Option<Bucket<T>> {
-        if unlikely(self.len == 0) {
-            return None;
-        }
-        self.len -= 1;
-        Some(unsafe { self.next_impl(group_base, base) })
-    }
-
-    #[inline]
-    pub(crate) fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.len, Some(self.len))
-    }
-
-    #[inline]
-    pub(crate) fn len(&self) -> usize {
-        self.len
-    }
-}
-
-impl<T> RawIterInner<T> {
-    pub(crate) unsafe fn drop_elements(&mut self, group_base: NonNull<u8>, base: Bucket<T>) {
-        if T::NEEDS_DROP && self.len != 0 {
-            while let Some(item) = self.next(group_base, base.clone()) {
-                item.drop();
-            }
-        }
-    }
 }

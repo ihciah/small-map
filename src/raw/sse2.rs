@@ -4,12 +4,11 @@ use core::arch::x86;
 use core::arch::x86_64 as x86;
 use core::{mem, num::NonZeroU16};
 
-use super::{bitmask::BitMask, EMPTY};
+use super::bitmask::BitMask;
 
 pub(crate) type BitMaskWord = u16;
 pub(crate) type NonZeroBitMaskWord = NonZeroU16;
 pub(crate) const BITMASK_STRIDE: usize = 1;
-pub(crate) const BITMASK_MASK: BitMaskWord = 0xffff;
 pub(crate) const BITMASK_ITER_MASK: BitMaskWord = !0;
 
 /// Abstraction over a group of control bytes which can be scanned in
@@ -51,16 +50,6 @@ impl Group {
         Group(x86::_mm_loadu_si128(ptr.cast()))
     }
 
-    /// Loads a group of bytes starting at the given address, which must be
-    /// aligned to `mem::align_of::<Group>()`.
-    #[inline]
-    #[allow(clippy::cast_ptr_alignment)]
-    pub(crate) unsafe fn load_aligned(ptr: *const u8) -> Self {
-        // FIXME: use align_offset once it stabilizes
-        debug_assert_eq!(ptr as usize & (mem::align_of::<Self>() - 1), 0);
-        Group(x86::_mm_load_si128(ptr.cast()))
-    }
-
     /// Returns a `BitMask` indicating all bytes in the group which have
     /// the given value.
     #[inline]
@@ -77,35 +66,5 @@ impl Group {
             let cmp = x86::_mm_cmpeq_epi8(self.0, x86::_mm_set1_epi8(byte as i8));
             BitMask(x86::_mm_movemask_epi8(cmp) as u16)
         }
-    }
-
-    /// Returns a `BitMask` indicating all bytes in the group which are
-    /// `EMPTY`.
-    #[inline]
-    pub(crate) fn match_empty(self) -> BitMask {
-        self.match_byte(EMPTY)
-    }
-
-    /// Returns a `BitMask` indicating all bytes in the group which are
-    /// `EMPTY` or `DELETED`.
-    #[inline]
-    pub(crate) fn match_empty_or_deleted(self) -> BitMask {
-        #[allow(
-            // byte: i32 as u16
-            //   note: _mm_movemask_epi8 returns a 16-bit mask in a i32, the
-            //   upper 16-bits of the i32 are zeroed:
-            clippy::cast_sign_loss,
-            clippy::cast_possible_truncation
-        )]
-        unsafe {
-            // A byte is EMPTY or DELETED iff the high bit is set
-            BitMask(x86::_mm_movemask_epi8(self.0) as u16)
-        }
-    }
-
-    /// Returns a `BitMask` indicating all bytes in the group which are full.
-    #[inline]
-    pub(crate) fn match_full(&self) -> BitMask {
-        self.match_empty_or_deleted().invert()
     }
 }

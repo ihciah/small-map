@@ -20,9 +20,6 @@ cfg_if! {
 pub(crate) type BitMaskWord = GroupWord;
 pub(crate) type NonZeroBitMaskWord = NonZeroGroupWord;
 pub(crate) const BITMASK_STRIDE: usize = 8;
-// We only care about the highest bit of each byte for the mask.
-#[allow(clippy::cast_possible_truncation, clippy::unnecessary_cast)]
-pub(crate) const BITMASK_MASK: BitMaskWord = 0x8080_8080_8080_8080_u64 as GroupWord;
 pub(crate) const BITMASK_ITER_MASK: BitMaskWord = !0;
 
 /// Helper function to replicate a byte across a `GroupWord`.
@@ -79,16 +76,6 @@ impl Group {
         Group(ptr::read_unaligned(ptr.cast()))
     }
 
-    /// Loads a group of bytes starting at the given address, which must be
-    /// aligned to `mem::align_of::<Group>()`.
-    #[inline]
-    #[allow(clippy::cast_ptr_alignment)]
-    pub(crate) unsafe fn load_aligned(ptr: *const u8) -> Self {
-        // FIXME: use align_offset once it stabilizes
-        debug_assert_eq!(ptr as usize & (mem::align_of::<Self>() - 1), 0);
-        Group(ptr::read(ptr.cast()))
-    }
-
     /// Returns a `BitMask` indicating all bytes in the group which *may*
     /// have the given value.
     ///
@@ -105,29 +92,5 @@ impl Group {
         // https://graphics.stanford.edu/~seander/bithacks.html##ValueInWord
         let cmp = self.0 ^ repeat(byte);
         BitMask((cmp.wrapping_sub(repeat(0x01)) & !cmp & repeat(0x80)).to_le())
-    }
-
-    /// Returns a `BitMask` indicating all bytes in the group which are
-    /// `EMPTY`.
-    #[inline]
-    pub(crate) fn match_empty(self) -> BitMask {
-        // If the high bit is set, then the byte must be either:
-        // 1111_1111 (EMPTY) or 1000_0000 (DELETED).
-        // So we can just check if the top two bits are 1 by ANDing them.
-        BitMask((self.0 & (self.0 << 1) & repeat(0x80)).to_le())
-    }
-
-    /// Returns a `BitMask` indicating all bytes in the group which are
-    /// `EMPTY` or `DELETED`.
-    #[inline]
-    pub(crate) fn match_empty_or_deleted(self) -> BitMask {
-        // A byte is EMPTY or DELETED iff the high bit is set
-        BitMask((self.0 & repeat(0x80)).to_le())
-    }
-
-    /// Returns a `BitMask` indicating all bytes in the group which are full.
-    #[inline]
-    pub(crate) fn match_full(self) -> BitMask {
-        self.match_empty_or_deleted().invert()
     }
 }

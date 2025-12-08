@@ -2,10 +2,8 @@
 // consistently improves performance by 10-15%.
 #[cfg(not(feature = "nightly"))]
 pub(crate) use core::convert::identity as likely;
-#[cfg(not(feature = "nightly"))]
-pub(crate) use core::convert::identity as unlikely;
 #[cfg(feature = "nightly")]
-pub(crate) use core::intrinsics::{likely, unlikely};
+pub(crate) use core::intrinsics::likely;
 // Use strict provenance functions if available.
 #[cfg(feature = "nightly")]
 use core::ptr::without_provenance_mut as invalid_mut;
@@ -135,12 +133,6 @@ impl<T> Bucket<T> {
         }
     }
 
-    /// Executes the destructor (if any) of the pointed-to `data`.
-    #[inline]
-    pub(crate) unsafe fn drop(&self) {
-        self.as_ptr().drop_in_place();
-    }
-
     /// Reads the `value` from `self` without moving it. This leaves the
     /// memory in `self` unchanged.
     #[inline]
@@ -165,22 +157,5 @@ impl<T> Bucket<T> {
     #[inline]
     pub(crate) unsafe fn as_mut<'a>(&self) -> &'a mut T {
         &mut *self.as_ptr()
-    }
-
-    /// Create a new [`Bucket`] that is offset from the `self` by the given
-    /// `offset`. The pointer calculation is performed by calculating the
-    /// offset from `self` pointer (convenience for `self.ptr.as_ptr().sub(offset)`).
-    /// This function is used for iterators.
-    #[inline]
-    pub(crate) unsafe fn next_n(&self, offset: usize) -> Self {
-        let ptr = if T::IS_ZERO_SIZED {
-            // invalid pointer is good enough for ZST
-            invalid_mut(self.ptr.as_ptr() as usize)
-        } else {
-            self.ptr.as_ptr().add(offset)
-        };
-        Self {
-            ptr: NonNull::new_unchecked(ptr),
-        }
     }
 }

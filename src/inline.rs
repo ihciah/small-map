@@ -8,9 +8,8 @@ use core::{
 use crate::{
     raw::{
         h2,
-        iter::{RawIntoIter, RawIter},
         util::{equivalent_key, likely, make_hash, Bucket, InsertSlot, SizedTypeProperties},
-        BitMaskWord, Group, RawIterInner, DELETED, EMPTY,
+        BitMaskWord, Group,
     },
     Equivalent,
 };
@@ -31,28 +30,19 @@ struct RawInline<const N: usize, T> {
 impl<const N: usize, T: Clone> Clone for RawInline<N, T> {
     #[inline]
     fn clone(&self) -> Self {
-        let mut aligned_groups = AlignedGroups {
-            groups: [EMPTY; N],
-            _align: [],
-        };
-        let mut data = unsafe { MaybeUninit::<[MaybeUninit<T>; N]>::uninit().assume_init() };
-        let mut new_idx = 0;
+        // SAFETY: MaybeUninit doesn't require initialization
+        let mut aligned_groups: AlignedGroups<N> = unsafe { MaybeUninit::uninit().assume_init() };
+        let mut data: [MaybeUninit<T>; N] = unsafe { MaybeUninit::uninit().assume_init() };
 
-        for i in 0..N {
-            let ctrl = self.aligned_groups.groups[i];
-            // Only copy valid entries (not EMPTY and not DELETED)
-            // EMPTY = 0b1111_1111, DELETED = 0b1000_0000
-            // Valid h2 values have the high bit unset (0x00-0x7F)
-            if ctrl & 0x80 == 0 {
-                aligned_groups.groups[new_idx] = ctrl;
-                data[new_idx] = MaybeUninit::new(unsafe { self.data[i].assume_init_ref().clone() });
-                new_idx += 1;
-            }
+        // Only 0..len is valid
+        for (i, group) in self.aligned_groups.groups.iter().take(self.len).enumerate() {
+            aligned_groups.groups[i] = *group;
+            data[i] = MaybeUninit::new(unsafe { self.data[i].assume_init_ref().clone() });
         }
 
         Self {
             aligned_groups,
-            len: new_idx,
+            len: self.len,
             data,
         }
     }
@@ -61,19 +51,14 @@ impl<const N: usize, T: Clone> Clone for RawInline<N, T> {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub(crate) struct AlignedGroups<const N: usize> {
-    groups: [u8; N],
+    groups: [MaybeUninit<u8>; N],
     _align: [Group; 0],
 }
 
 impl<const N: usize> AlignedGroups<N> {
     #[inline]
     unsafe fn ctrl(&self, index: usize) -> *mut u8 {
-        self.groups.as_ptr().add(index).cast_mut()
-    }
-
-    #[inline]
-    pub(crate) fn as_ptr(&self) -> NonNull<u8> {
-        unsafe { NonNull::new_unchecked(self.groups.as_ptr() as _) }
+        (self.groups.as_ptr() as *const u8).add(index).cast_mut()
     }
 }
 
@@ -87,13 +72,10 @@ impl<const N: usize, T> Drop for RawInline<N, T> {
 impl<const N: usize, T> RawInline<N, T> {
     #[inline]
     unsafe fn drop_elements(&mut self) {
-        if T::NEEDS_DROP && self.len != 0 {
-            unsafe {
-                drop(RawIntoIter {
-                    inner: self.raw_iter_inner(),
-                    aligned_groups: (&self.aligned_groups as *const AlignedGroups<N>).read(),
-                    data: (&self.data as *const [MaybeUninit<T>; N]).read(),
-                });
+        if T::NEEDS_DROP {
+            // Data is contiguous in 0..len
+            for i in 0..self.len {
+                core::ptr::drop_in_place(self.data[i].as_mut_ptr());
             }
         }
     }
@@ -122,8 +104,11 @@ impl<const N: usize, T> RawInline<N, T> {
     const TAIL_MASK: BitMaskWord = Group::LOWEST_MASK[N % Group::WIDTH];
 
     /// Searches for an element in the table.
+    /// Data is stored contiguously in 0..len.
     #[inline]
     fn find(&self, hash: u64, mut eq: impl FnMut(&T) -> bool) -> Option<Bucket<T>> {
+        
+
         unsafe {
             let h2_hash = h2(hash);
             let mut probe_pos = 0;
@@ -134,7 +119,10 @@ impl<const N: usize, T> RawInline<N, T> {
                 let matches = group.match_byte(h2_hash);
                 for bit in matches {
                     let index = probe_pos + bit;
-                    if likely(eq(self.data.get_unchecked(index).assume_init_ref())) {
+                    // Only check indices within valid range
+                    if index < self.len
+                        && likely(eq(self.data.get_unchecked(index).assume_init_ref()))
+                    {
                         return Some(self.bucket(index));
                     }
                 }
@@ -146,7 +134,10 @@ impl<const N: usize, T> RawInline<N, T> {
                 let matches = group.match_byte(h2_hash).and(Self::TAIL_MASK);
                 for bit in matches {
                     let index = probe_pos + bit;
-                    if likely(eq(self.data.get_unchecked(index).assume_init_ref())) {
+                    // Only check indices within valid range
+                    if index < self.len
+                        && likely(eq(self.data.get_unchecked(index).assume_init_ref()))
+                    {
                         return Some(self.bucket(index));
                     }
                 }
@@ -158,73 +149,17 @@ impl<const N: usize, T> RawInline<N, T> {
     /// Searches for an element in the table. If the element is not found,
     /// returns `Err` with the position of a slot where an element with the
     /// same hash could be inserted.
+    /// Data is contiguous, so insert slot is always at `len`.
     #[inline]
     fn find_or_find_insert_slot(
         &mut self,
         hash: u64,
-        mut eq: impl FnMut(&T) -> bool,
+        eq: impl FnMut(&T) -> bool,
     ) -> Result<Bucket<T>, InsertSlot> {
-        unsafe {
-            let mut insert_slot = None;
-            let h2_hash = h2(hash);
-            let mut probe_pos = 0;
-
-            // Manually expand the loop
-            for _ in 0..Self::UNCHECKED_GROUP {
-                let group = Group::load(self.aligned_groups.ctrl(probe_pos));
-                let matches = group.match_byte(h2_hash);
-                for bit in matches {
-                    let index = probe_pos + bit;
-                    if likely(eq(self.data.get_unchecked(index).assume_init_ref())) {
-                        return Ok(self.bucket(index));
-                    }
-                }
-
-                // We didn't find the element we were looking for in the group, try to get an
-                // insertion slot from the group if we don't have one yet.
-                if likely(insert_slot.is_none()) {
-                    insert_slot = self.find_insert_slot_in_group(&group, probe_pos);
-                }
-
-                // If there's empty set, we should stop searching next group.
-                if likely(group.match_empty().any_bit_set()) {
-                    break;
-                }
-                probe_pos += Group::WIDTH;
-            }
-            if !N.is_multiple_of(Group::WIDTH) {
-                let group = Group::load(self.aligned_groups.ctrl(probe_pos));
-                let matches = group.match_byte(h2_hash).and(Self::TAIL_MASK);
-                for bit in matches {
-                    let index = probe_pos + bit;
-                    if likely(eq(self.data.get_unchecked(index).assume_init_ref())) {
-                        return Ok(self.bucket(index));
-                    }
-                }
-
-                // We didn't find the element we were looking for in the group, try to get an
-                // insertion slot from the group if we don't have one yet.
-                if likely(insert_slot.is_none()) {
-                    insert_slot = self.find_insert_slot_in_group(&group, probe_pos);
-                }
-            }
-
-            Err(InsertSlot {
-                index: insert_slot.unwrap_unchecked(),
-            })
+        match self.find(hash, eq) {
+            Some(bucket) => Ok(bucket),
+            None => Err(InsertSlot { index: self.len }),
         }
-    }
-
-    /// Finds the position to insert something in a group.
-    #[inline]
-    fn find_insert_slot_in_group(&self, group: &Group, probe_seq: usize) -> Option<usize> {
-        let bit = group.match_empty_or_deleted().lowest_set_bit();
-
-        if likely(bit.is_some()) {
-            let n = unsafe { bit.unwrap_unchecked() };
-            return Some(probe_seq + n);
-        }
-        None
     }
 
     /// Inserts a new element into the table in the given slot, and returns its
@@ -264,23 +199,15 @@ impl<const N: usize, T> RawInline<N, T> {
     }
 
     /// Removes an element from the table, returning it.
+    /// Uses swap-delete: swaps with last element to maintain contiguity.
     #[inline]
     #[allow(clippy::needless_pass_by_value)]
     unsafe fn remove(&mut self, item: Bucket<T>) -> (T, InsertSlot) {
-        self.erase_no_drop(&item);
-        (
-            item.read(),
-            InsertSlot {
-                index: self.bucket_index(&item),
-            },
-        )
-    }
-
-    /// Erases an element from the table without dropping it.
-    #[inline]
-    unsafe fn erase_no_drop(&mut self, item: &Bucket<T>) {
-        let index = self.bucket_index(item);
+        let index = self.bucket_index(&item);
+        // Read value before swap-delete
+        let value = item.read();
         self.erase(index);
+        (value, InsertSlot { index })
     }
 
     /// Returns the index of a bucket from a `Bucket`.
@@ -289,12 +216,18 @@ impl<const N: usize, T> RawInline<N, T> {
         bucket.to_base_index(NonNull::new_unchecked(self.data.as_ptr() as _))
     }
 
-    /// Erases the [`Bucket`]'s control byte at the given index so that it does not
-    /// triggered as full, decreases the `items` of the table and, if it can be done,
-    /// increases `self.growth_left`.
+    /// Erases the element at index using swap-delete.
+    /// Swaps with the last element to maintain contiguous storage.
     #[inline]
     unsafe fn erase(&mut self, index: usize) {
-        *self.aligned_groups.ctrl(index) = DELETED;
+        let last = self.len - 1;
+        if index != last {
+            // Swap data
+            core::ptr::swap(self.data[index].as_mut_ptr(), self.data[last].as_mut_ptr());
+            // Swap control bytes (h2 values)
+            self.aligned_groups.groups.swap(index, last);
+        }
+        // No need to clear ctrl[last] - len tracks validity
         self.len -= 1;
     }
 
@@ -308,123 +241,138 @@ impl<const N: usize, T> RawInline<N, T> {
             index,
         )
     }
-
-    #[inline]
-    unsafe fn raw_iter_inner(&self) -> RawIterInner<T> {
-        let init_group = Group::load_aligned(self.aligned_groups.ctrl(0)).match_full();
-        RawIterInner::new(init_group, self.len)
-    }
-
-    #[inline]
-    fn iter(&self) -> RawIter<'_, N, T> {
-        RawIter {
-            inner: unsafe { self.raw_iter_inner() },
-            aligned_groups: &self.aligned_groups,
-            data: &self.data,
-        }
-    }
 }
 
 impl<const N: usize, K, V> RawInline<N, (K, V)> {
+    /// Retains only elements where f returns true.
+    /// Uses swap-delete to maintain contiguous storage.
     #[inline]
     fn retain<F>(&mut self, f: &mut F)
     where
         F: FnMut(&K, &mut V) -> bool,
     {
-        for i in 0..N {
-            let ctrl = self.aligned_groups.groups[i];
-            // Only process valid entries (not EMPTY and not DELETED)
-            if ctrl & 0x80 == 0 {
-                let (k, v) = unsafe { self.data[i].assume_init_mut() };
-                if !f(k, v) {
+        let mut i = 0;
+        while i < self.len {
+            let (k, v) = unsafe { self.data[i].assume_init_mut() };
+            if f(k, v) {
+                i += 1;
+            } else {
+                // Drop the element
+                unsafe { core::ptr::drop_in_place(self.data[i].as_mut_ptr()) };
+                // Swap-delete: move last element to this position
+                let last = self.len - 1;
+                if i != last {
                     unsafe {
-                        *self.aligned_groups.ctrl(i) = DELETED;
-                        core::ptr::drop_in_place(self.data[i].as_mut_ptr());
+                        core::ptr::copy_nonoverlapping(
+                            self.data[last].as_ptr(),
+                            self.data[i].as_mut_ptr(),
+                            1,
+                        );
                     }
-                    self.len -= 1;
+                    self.aligned_groups.groups[i] = self.aligned_groups.groups[last];
                 }
+                self.len -= 1;
+                // Don't increment i, check the swapped element
             }
         }
     }
 }
 
-impl<const N: usize, T> IntoIterator for RawInline<N, T> {
-    type Item = T;
-    type IntoIter = RawIntoIter<N, T>;
-
-    #[inline]
-    fn into_iter(self) -> RawIntoIter<N, T> {
-        let ret = unsafe {
-            RawIntoIter {
-                inner: self.raw_iter_inner(),
-                aligned_groups: (&self.aligned_groups as *const AlignedGroups<N>).read(),
-                data: (&self.data as *const [MaybeUninit<T>; N]).read(),
-            }
-        };
-        mem::forget(self);
-        ret
-    }
-}
-
+/// Iterator over references to key-value pairs.
 pub struct Iter<'a, const N: usize, K, V> {
-    inner: RawIter<'a, N, (K, V)>,
-}
-
-pub struct IntoIter<const N: usize, K, V> {
-    inner: RawIntoIter<N, (K, V)>,
+    data: &'a [MaybeUninit<(K, V)>; N],
+    index: usize,
+    len: usize,
 }
 
 impl<'a, const N: usize, K, V> Iterator for Iter<'a, N, K, V> {
     type Item = (&'a K, &'a V);
 
     #[inline]
-    fn next(&mut self) -> Option<(&'a K, &'a V)> {
-        match self.inner.next() {
-            Some(kv) => Some((&kv.0, &kv.1)),
-            None => None,
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index < self.len {
+            let kv = unsafe { self.data[self.index].assume_init_ref() };
+            self.index += 1;
+            Some((&kv.0, &kv.1))
+        } else {
+            None
         }
     }
+
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
-        self.inner.size_hint()
+        let remaining = self.len - self.index;
+        (remaining, Some(remaining))
     }
+}
+
+impl<'a, const N: usize, K, V> ExactSizeIterator for Iter<'a, N, K, V> {
+    #[inline]
+    fn len(&self) -> usize {
+        self.len - self.index
+    }
+}
+
+impl<'a, const N: usize, K, V> FusedIterator for Iter<'a, N, K, V> {}
+
+/// Owning iterator over key-value pairs.
+pub struct IntoIter<const N: usize, K, V> {
+    data: [MaybeUninit<(K, V)>; N],
+    index: usize,
+    len: usize,
 }
 
 impl<const N: usize, K, V> Iterator for IntoIter<N, K, V> {
     type Item = (K, V);
 
     #[inline]
-    fn next(&mut self) -> Option<(K, V)> {
-        self.inner.next()
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index < self.len {
+            let kv = unsafe { self.data[self.index].as_ptr().read() };
+            self.index += 1;
+            Some(kv)
+        } else {
+            None
+        }
     }
+
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
-        self.inner.size_hint()
+        let remaining = self.len - self.index;
+        (remaining, Some(remaining))
     }
 }
-impl<'a, const N: usize, K, V> ExactSizeIterator for Iter<'a, N, K, V> {
-    #[inline]
-    fn len(&self) -> usize {
-        self.inner.len()
-    }
-}
+
 impl<const N: usize, K, V> ExactSizeIterator for IntoIter<N, K, V> {
     #[inline]
     fn len(&self) -> usize {
-        self.inner.len()
+        self.len - self.index
     }
 }
-impl<'a, const N: usize, K, V> FusedIterator for Iter<'a, N, K, V> {}
+
 impl<const N: usize, K, V> FusedIterator for IntoIter<N, K, V> {}
+
+impl<const N: usize, K, V> Drop for IntoIter<N, K, V> {
+    fn drop(&mut self) {
+        // Drop remaining elements
+        for i in self.index..self.len {
+            unsafe { core::ptr::drop_in_place(self.data[i].as_mut_ptr()) };
+        }
+    }
+}
 
 impl<const N: usize, K, V, S> IntoIterator for Inline<N, K, V, S> {
     type Item = (K, V);
     type IntoIter = IntoIter<N, K, V>;
 
     fn into_iter(self) -> Self::IntoIter {
-        IntoIter {
-            inner: self.raw.into_iter(),
-        }
+        let iter = IntoIter {
+            data: unsafe { core::ptr::read(&self.raw.data) },
+            index: 0,
+            len: self.raw.len,
+        };
+        mem::forget(self);
+        iter
     }
 }
 
@@ -432,7 +380,9 @@ impl<const N: usize, K, V, S> Inline<N, K, V, S> {
     #[inline]
     pub(crate) fn iter(&self) -> Iter<'_, N, K, V> {
         Iter {
-            inner: self.raw.iter(),
+            data: &self.raw.data,
+            index: 0,
+            len: self.raw.len,
         }
     }
 
@@ -441,13 +391,10 @@ impl<const N: usize, K, V, S> Inline<N, K, V, S> {
         assert!(N != 0, "SmallMap cannot be initialized with zero size.");
         Self {
             raw: RawInline {
-                aligned_groups: AlignedGroups {
-                    groups: [EMPTY; N],
-                    _align: [],
-                },
+                // SAFETY: MaybeUninit doesn't require initialization, len tracks validity
+                aligned_groups: unsafe { MaybeUninit::uninit().assume_init() },
                 len: 0,
-                // TODO: use uninit_array when stable
-                data: unsafe { MaybeUninit::<[MaybeUninit<(K, V)>; N]>::uninit().assume_init() },
+                data: unsafe { MaybeUninit::uninit().assume_init() },
             },
             hash_builder: Some(hash_builder),
         }
