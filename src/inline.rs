@@ -62,15 +62,40 @@ struct RawInline<const N: usize, T> {
 impl<const N: usize, T: Clone> Clone for RawInline<N, T> {
     #[inline]
     fn clone(&self) -> Self {
+        struct DropGuard<'a, T> {
+            data: &'a mut [MaybeUninit<T>],
+            len: usize,
+        }
+
+        impl<'a, T> Drop for DropGuard<'a, T> {
+            fn drop(&mut self) {
+                // SAFETY: data[0..len] are initialized
+                for i in 0..self.len {
+                    unsafe {
+                        core::ptr::drop_in_place(self.data[i].as_mut_ptr());
+                    }
+                }
+            }
+        }
+
         // SAFETY: MaybeUninit doesn't require initialization
         let mut aligned_groups: AlignedGroups<N> = unsafe { MaybeUninit::uninit().assume_init() };
         let mut data: [MaybeUninit<T>; N] = unsafe { MaybeUninit::uninit().assume_init() };
 
+        let mut guard = DropGuard {
+            data: &mut data,
+            len: 0,
+        };
+
         // Only 0..len is valid
         for (i, group) in self.aligned_groups.groups.iter().take(self.len).enumerate() {
             aligned_groups.groups[i] = *group;
-            data[i] = MaybeUninit::new(unsafe { self.data[i].assume_init_ref().clone() });
+            // If T::clone panics, guard will drop everything cloned so far
+            guard.data[i] = MaybeUninit::new(unsafe { self.data[i].assume_init_ref().clone() });
+            guard.len += 1;
         }
+
+        mem::forget(guard);
 
         Self {
             aligned_groups,

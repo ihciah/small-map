@@ -1855,4 +1855,92 @@ mod tests {
         map2.insert(1, 10);
         assert_eq!(map2.get(&1), Some(&10));
     }
+
+    #[test]
+    fn panic_safe_clone_test() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+        struct PanicOnClone {
+            should_panic: bool,
+            #[allow(dead_code)]
+            data: i32,
+        }
+
+        impl Clone for PanicOnClone {
+            fn clone(&self) -> Self {
+                if self.should_panic {
+                    panic!("Panic on clone!");
+                }
+                Self {
+                    should_panic: self.should_panic,
+                    data: self.data,
+                }
+            }
+        }
+
+        impl Drop for PanicOnClone {
+            fn drop(&mut self) {
+                DROP_COUNT.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        // Setup:
+        // Map has 3 items.
+        // Item 0: Don't panic.
+        // Item 1: Panic on clone.
+        // Item 2: Don't panic.
+        let mut map: SmallMap<8, i32, PanicOnClone> = SmallMap::new();
+        map.insert(
+            0,
+            PanicOnClone {
+                should_panic: false,
+                data: 0,
+            },
+        );
+        map.insert(
+            1,
+            PanicOnClone {
+                should_panic: true,
+                data: 1,
+            },
+        );
+        map.insert(
+            2,
+            PanicOnClone {
+                should_panic: false,
+                data: 2,
+            },
+        );
+
+        // Reset global counter
+        DROP_COUNT.store(0, Ordering::SeqCst);
+
+        // Action:
+        // Try to clone. This should panic.
+        // During clone:
+        // 1. Item 0 is cloned -> New Item 0 created.
+        // 2. Item 1 clone starts -> Panics.
+        //
+        // Cleanup expected:
+        // - New Item 0 should be dropped.
+        //
+        // Note: The original items are still in `map` and shouldn't be dropped yet.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = map.clone();
+        }));
+
+        assert!(result.is_err(), "Clone should have panicked");
+
+        // Verification:
+        // We expect exactly 1 drop (the New Item 0 that was successfully cloned before the panic).
+        // If the implementation is not panic-safe, this will be 0 (leak).
+        let drops = DROP_COUNT.load(Ordering::SeqCst);
+        assert_eq!(
+            drops, 1,
+            "Leaked memory on panic! Expected 1 drop (the partially cloned element), got {}",
+            drops
+        );
+    }
 }
