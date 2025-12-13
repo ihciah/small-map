@@ -1,7 +1,7 @@
 use core::{
     hash::{BuildHasher, Hash},
     iter::FusedIterator,
-    mem::{self, transmute, MaybeUninit},
+    mem::{self, transmute, ManuallyDrop, MaybeUninit},
     ptr::NonNull,
 };
 
@@ -387,13 +387,22 @@ impl<const N: usize, K, V, S, SI> IntoIterator for Inline<N, K, V, S, SI> {
 
     #[inline]
     fn into_iter(self) -> Self::IntoIter {
-        let iter = IntoIter {
-            data: unsafe { core::ptr::read(&self.raw.data) },
+        // Use ManuallyDrop to take ownership of the data while still dropping hashers.
+        let mut this = ManuallyDrop::new(self);
+        let data = unsafe { core::ptr::read(&this.raw.data) };
+        let len = this.raw.len;
+
+        // Drop hashers eagerly to avoid leaking resources when consuming inline storage.
+        unsafe {
+            core::ptr::drop_in_place(&mut this.inline_hasher);
+            core::ptr::drop_in_place(&mut this.heap_hasher);
+        }
+
+        IntoIter {
+            data,
             index: 0,
-            len: self.raw.len,
-        };
-        mem::forget(self);
-        iter
+            len,
+        }
     }
 }
 
