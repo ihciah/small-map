@@ -46,20 +46,22 @@ impl<F: FnOnce() -> u64> HashValue<F> {
 }
 
 #[derive(Clone)]
-pub struct Inline<const N: usize, K, V, S, SI> {
-    raw: RawInline<N, (K, V)>,
+pub struct Inline<const N: usize, K, V, SH, SI, const LINEAR_THRESHOLD: usize = { Group::WIDTH }> {
+    raw: RawInline<N, (K, V), LINEAR_THRESHOLD>,
     // Option is for take, S always exists before drop.
     inline_hasher: Option<SI>,
-    heap_hasher: Option<S>,
+    heap_hasher: Option<SH>,
 }
 
-struct RawInline<const N: usize, T> {
+struct RawInline<const N: usize, T, const LINEAR_THRESHOLD: usize = { Group::WIDTH }> {
     aligned_groups: AlignedGroups<N>,
     len: usize,
     data: [MaybeUninit<T>; N],
 }
 
-impl<const N: usize, T: Clone> Clone for RawInline<N, T> {
+impl<const N: usize, T: Clone, const LINEAR_THRESHOLD: usize> Clone
+    for RawInline<N, T, LINEAR_THRESHOLD>
+{
     #[inline]
     fn clone(&self) -> Self {
         struct DropGuard<'a, T> {
@@ -119,17 +121,22 @@ impl<const N: usize> AlignedGroups<N> {
     }
 }
 
-impl<const N: usize, T> Drop for RawInline<N, T> {
+impl<const N: usize, T, const LINEAR_THRESHOLD: usize> Drop for RawInline<N, T, LINEAR_THRESHOLD> {
     #[inline]
     fn drop(&mut self) {
         unsafe { self.drop_elements() }
     }
 }
 
-/// Threshold for using linear search instead of SIMD.
-const USE_LINEAR_THRESHOLD: usize = Group::WIDTH;
+impl<const N: usize, T, const LINEAR_THRESHOLD: usize> RawInline<N, T, LINEAR_THRESHOLD> {
+    /// Minimum len threshold for linear search.
+    /// Always at least 2 to ensure len=1 skips hash computation.
+    const MIN_LINEAR_LEN: usize = if LINEAR_THRESHOLD > 2 {
+        LINEAR_THRESHOLD
+    } else {
+        2
+    };
 
-impl<const N: usize, T> RawInline<N, T> {
     #[inline]
     unsafe fn drop_elements(&mut self) {
         if T::NEEDS_DROP {
@@ -148,7 +155,7 @@ impl<const N: usize, T> RawInline<N, T> {
         hash: &mut HashValue<F>,
         mut eq: impl FnMut(&T) -> bool,
     ) -> Option<Bucket<T>> {
-        if N < USE_LINEAR_THRESHOLD || self.len < USE_LINEAR_THRESHOLD {
+        if N < LINEAR_THRESHOLD || self.len < Self::MIN_LINEAR_LEN {
             // Linear search - no hash needed
             for i in 0..self.len {
                 if eq(unsafe { self.data.get_unchecked(i).assume_init_ref() }) {
@@ -263,7 +270,7 @@ impl<const N: usize, T> RawInline<N, T> {
     }
 }
 
-impl<const N: usize, K, V> RawInline<N, (K, V)> {
+impl<const N: usize, K, V, const LINEAR_THRESHOLD: usize> RawInline<N, (K, V), LINEAR_THRESHOLD> {
     /// Retains only elements where f returns true.
     /// Uses swap-delete to maintain contiguous storage.
     #[inline]
@@ -381,7 +388,9 @@ impl<const N: usize, K, V> Drop for IntoIter<N, K, V> {
     }
 }
 
-impl<const N: usize, K, V, S, SI> IntoIterator for Inline<N, K, V, S, SI> {
+impl<const N: usize, K, V, SH, SI, const LINEAR_THRESHOLD: usize> IntoIterator
+    for Inline<N, K, V, SH, SI, LINEAR_THRESHOLD>
+{
     type Item = (K, V);
     type IntoIter = IntoIter<N, K, V>;
 
@@ -406,7 +415,9 @@ impl<const N: usize, K, V, S, SI> IntoIterator for Inline<N, K, V, S, SI> {
     }
 }
 
-impl<const N: usize, K, V, S, SI> Inline<N, K, V, S, SI> {
+impl<const N: usize, K, V, SH, SI, const LINEAR_THRESHOLD: usize>
+    Inline<N, K, V, SH, SI, LINEAR_THRESHOLD>
+{
     #[inline]
     pub(crate) fn iter(&self) -> Iter<'_, N, K, V> {
         Iter {
@@ -421,7 +432,7 @@ impl<const N: usize, K, V, S, SI> Inline<N, K, V, S, SI> {
     const VALIDNESS_CHECK: () = assert!(N != 0, "SmallMap cannot be initialized with zero size.");
 
     #[inline]
-    pub(crate) const fn new(hash_builder: SI, heap_hasher: S) -> Self {
+    pub(crate) const fn new(hash_builder: SI, heap_hasher: SH) -> Self {
         // Trigger compile-time check
         #[allow(clippy::let_unit_value)]
         let _ = Self::VALIDNESS_CHECK;
@@ -463,7 +474,7 @@ impl<const N: usize, K, V, S, SI> Inline<N, K, V, S, SI> {
     // # Safety
     // Hasher must exist.
     #[inline]
-    pub(crate) unsafe fn take_heap_hasher(&mut self) -> S {
+    pub(crate) unsafe fn take_heap_hasher(&mut self) -> SH {
         self.heap_hasher.take().unwrap_unchecked()
     }
 
@@ -473,7 +484,8 @@ impl<const N: usize, K, V, S, SI> Inline<N, K, V, S, SI> {
     }
 }
 
-impl<const N: usize, K, V, S, SI> Inline<N, K, V, S, SI>
+impl<const N: usize, K, V, SH, SI, const LINEAR_THRESHOLD: usize>
+    Inline<N, K, V, SH, SI, LINEAR_THRESHOLD>
 where
     K: Eq + Hash,
     SI: BuildHasher,
@@ -520,7 +532,7 @@ where
     /// Inserts a key-value pair into the map.
     #[inline]
     pub(crate) fn insert(&mut self, k: K, v: V) -> Option<V> {
-        if N < USE_LINEAR_THRESHOLD {
+        if N < LINEAR_THRESHOLD {
             // Small N: use linear search, no hash needed
             let len = self.raw.len;
             for i in 0..len {

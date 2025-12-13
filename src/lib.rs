@@ -66,13 +66,86 @@ type DefaultInlineHasher = core::hash::BuildHasherDefault<ahash::AHasher>;
 ))]
 type DefaultInlineHasher = RandomState;
 
+/// Default threshold for switching from linear search to SIMD hash search.
+/// When `N` or `len` is less than this value, linear search is used.
+/// Equal to the SIMD group width (16 on SSE2, 8 on NEON/generic).
+pub const DEFAULT_LINEAR_THRESHOLD: usize = raw::Group::WIDTH;
+
+/// A hybrid map that stores data inline when small, and spills to heap when it grows.
+///
+/// # Type Parameters
+///
+/// - `N`: Maximum number of elements to store inline (must be > 0). When the map exceeds this size,
+///   it automatically spills to a heap-allocated `HashMap`.
+///
+/// - `K`: Key type. Must implement `Eq + Hash` for most operations.
+///
+/// - `V`: Value type.
+///
+/// - `SH`: Hasher for heap storage. Default: [`RandomState`]. This hasher is used when the map
+///   spills to heap. Note: The standard library's `RandomState` provides HashDoS resistance but is
+///   not the fastest option. Consider your security vs performance requirements - for
+///   non-adversarial workloads, faster alternatives like `rapidhash` or `fxhash` can improve
+///   performance significantly (though they are not cryptographically secure).
+///
+/// - `SI`: Hasher for inline storage. Default: `DefaultInlineHasher` (rapidhash if available,
+///   otherwise fxhash, ahash, or RandomState based on features). This hasher is used for
+///   SIMD-accelerated lookups in inline mode. Since inline storage only handles a small number of
+///   elements, HashDoS resistance is generally not a concern here - performance is the priority. We
+///   recommend using the default value and enabling the `rapidhash` or `fxhash` feature for best
+///   performance.
+///
+/// - `LINEAR_THRESHOLD`: Threshold for switching between linear and SIMD search. Default:
+///   [`DEFAULT_LINEAR_THRESHOLD`] (equal to SIMD group width, typically 16 on SSE2). When `N <
+///   LINEAR_THRESHOLD` or `len < LINEAR_THRESHOLD`, linear search is used; otherwise,
+///   SIMD-accelerated hash search is used.
+///
+///   **How to choose this value**: The optimal threshold depends on the tradeoff between
+///   hash computation cost and key comparison cost:
+///   - **Linear search**: `len` key comparisons (direct equality checks).
+///   - **SIMD search**: 1 hash computation + `len / GROUP_WIDTH` SIMD operations + a few key
+///     comparisons.
+///
+///   If key comparison is cheap (e.g., integers, short strings), a higher threshold favors
+///   linear search which avoids hash overhead. If key comparison is expensive (e.g., long
+///   strings, complex types), a lower threshold makes SIMD search more attractive.
+///
+///   **Recommendation**: Values above 16 are generally not recommended. The default value
+///   works well for most use cases. Set to `0` to disable linear search entirely.
+///
+/// # Examples
+///
+/// ```
+/// use small_map::SmallMap;
+///
+/// // Basic usage with defaults
+/// let mut map: SmallMap<8, &str, i32> = SmallMap::new();
+/// map.insert("a", 1);
+///
+/// // Custom hasher
+/// use std::collections::hash_map::RandomState;
+/// let mut map: SmallMap<8, &str, i32, RandomState> = SmallMap::new();
+///
+/// // Custom linear threshold (force SIMD search even for small maps)
+/// let mut map: SmallMap<8, &str, i32, RandomState, RandomState, 4> = SmallMap::new();
+/// ```
 #[derive(Clone)]
-pub enum SmallMap<const N: usize, K, V, S = RandomState, SI = DefaultInlineHasher> {
-    Heap(HashMap<K, V, S>),
-    Inline(Inline<N, K, V, S, SI>),
+pub enum SmallMap<
+    const N: usize,
+    K,
+    V,
+    SH = RandomState,
+    SI = DefaultInlineHasher,
+    const LINEAR_THRESHOLD: usize = DEFAULT_LINEAR_THRESHOLD,
+> {
+    /// Heap-allocated storage using `hashbrown::HashMap`.
+    Heap(HashMap<K, V, SH>),
+    /// Inline storage with SIMD-accelerated lookups.
+    Inline(Inline<N, K, V, SH, SI, LINEAR_THRESHOLD>),
 }
 
-impl<const N: usize, K, V, S, SI> Debug for SmallMap<N, K, V, S, SI>
+impl<const N: usize, K, V, SH, SI, const LINEAR_THRESHOLD: usize> Debug
+    for SmallMap<N, K, V, SH, SI, LINEAR_THRESHOLD>
 where
     K: Debug,
     V: Debug,
@@ -82,8 +155,10 @@ where
     }
 }
 
-impl<const N: usize, K, V, S: Default, SI: Default> Default for SmallMap<N, K, V, S, SI> {
-    /// Creates an empty `SmallMap<N, K, V, S, SI>`, with the `Default` value for the hasher.
+impl<const N: usize, K, V, SH: Default, SI: Default, const LINEAR_THRESHOLD: usize> Default
+    for SmallMap<N, K, V, SH, SI, LINEAR_THRESHOLD>
+{
+    /// Creates an empty `SmallMap<N, K, V, SH, SI>`, with the `Default` value for the hasher.
     ///
     /// # Examples
     ///
@@ -105,7 +180,9 @@ impl<const N: usize, K, V, S: Default, SI: Default> Default for SmallMap<N, K, V
     }
 }
 
-impl<const N: usize, K, V, S: Default, SI: Default> SmallMap<N, K, V, S, SI> {
+impl<const N: usize, K, V, SH: Default, SI: Default, const LINEAR_THRESHOLD: usize>
+    SmallMap<N, K, V, SH, SI, LINEAR_THRESHOLD>
+{
     /// Creates an empty `SmallMap`.
     #[inline]
     pub fn new() -> Self {
@@ -129,7 +206,9 @@ impl<const N: usize, K, V, S: Default, SI: Default> SmallMap<N, K, V, S, SI> {
     }
 }
 
-impl<const N: usize, K, V, S, SI> SmallMap<N, K, V, S, SI> {
+impl<const N: usize, K, V, SH, SI, const LINEAR_THRESHOLD: usize>
+    SmallMap<N, K, V, SH, SI, LINEAR_THRESHOLD>
+{
     /// Creates an empty `SmallMap` which will use the given hash builder to hash
     /// keys. It will be allocated with the given allocator.
     ///
@@ -147,7 +226,7 @@ impl<const N: usize, K, V, S, SI> SmallMap<N, K, V, S, SI> {
     /// map.insert(1, 2);
     /// ```
     #[inline]
-    pub fn with_hasher(hash_builder: S) -> Self
+    pub fn with_hasher(hash_builder: SH) -> Self
     where
         SI: Default,
     {
@@ -167,7 +246,7 @@ impl<const N: usize, K, V, S, SI> SmallMap<N, K, V, S, SI> {
     /// map.insert(1, 2);
     /// ```
     #[inline]
-    pub const fn with_hashers(heap_hasher: S, inline_hasher: SI) -> Self {
+    pub const fn with_hashers(heap_hasher: SH, inline_hasher: SI) -> Self {
         Self::Inline(Inline::new(inline_hasher, heap_hasher))
     }
 
@@ -177,7 +256,7 @@ impl<const N: usize, K, V, S, SI> SmallMap<N, K, V, S, SI> {
     /// The hash map will be able to hold at least `capacity` elements without
     /// reallocating. If `capacity` is smaller than or eq to N, the hash map will not allocate.
     #[inline]
-    pub fn with_capacity_and_hasher(capacity: usize, heap_hasher: S) -> Self
+    pub fn with_capacity_and_hasher(capacity: usize, heap_hasher: SH) -> Self
     where
         SI: Default,
     {
@@ -203,7 +282,7 @@ impl<const N: usize, K, V, S, SI> SmallMap<N, K, V, S, SI> {
     /// map.insert(1, 2);
     /// ```
     #[inline]
-    pub fn with_capacity_and_hashers(capacity: usize, heap_hasher: S, inline_hasher: SI) -> Self {
+    pub fn with_capacity_and_hashers(capacity: usize, heap_hasher: SH, inline_hasher: SI) -> Self {
         if capacity > N {
             Self::Heap(HashMap::with_capacity_and_hasher(capacity, heap_hasher))
         } else {
@@ -244,10 +323,11 @@ impl<const N: usize, K, V, S, SI> SmallMap<N, K, V, S, SI> {
     }
 }
 
-impl<const N: usize, K, V, S, SI> SmallMap<N, K, V, S, SI>
+impl<const N: usize, K, V, SH, SI, const LINEAR_THRESHOLD: usize>
+    SmallMap<N, K, V, SH, SI, LINEAR_THRESHOLD>
 where
     K: Eq + Hash,
-    S: BuildHasher,
+    SH: BuildHasher,
     SI: BuildHasher,
 {
     /// Returns a reference to the value corresponding to the key.
@@ -406,7 +486,7 @@ where
     /// Only call when self is Inline and is full.
     #[cold]
     #[inline(never)]
-    unsafe fn spill_to_heap(&mut self) -> &mut HashMap<K, V, S> {
+    unsafe fn spill_to_heap(&mut self) -> &mut HashMap<K, V, SH> {
         let heap = match self {
             SmallMap::Inline(inner) => {
                 HashMap::with_capacity_and_hasher(N * 2, inner.take_heap_hasher())
@@ -506,7 +586,9 @@ where
     }
 }
 
-impl<const N: usize, K, V, S, SI> SmallMap<N, K, V, S, SI> {
+impl<const N: usize, K, V, SH, SI, const LINEAR_THRESHOLD: usize>
+    SmallMap<N, K, V, SH, SI, LINEAR_THRESHOLD>
+{
     /// Clears the map.
     ///
     /// This method clears the map and keeps the allocated memory for reuse.
@@ -749,7 +831,9 @@ impl<const N: usize, K, V> ExactSizeIterator for IntoIter<N, K, V> {
 
 impl<const N: usize, K, V> FusedIterator for IntoIter<N, K, V> {}
 
-impl<const N: usize, K, V, S, SI> IntoIterator for SmallMap<N, K, V, S, SI> {
+impl<const N: usize, K, V, SH, SI, const LINEAR_THRESHOLD: usize> IntoIterator
+    for SmallMap<N, K, V, SH, SI, LINEAR_THRESHOLD>
+{
     type Item = (K, V);
     type IntoIter = IntoIter<N, K, V>;
 
@@ -765,7 +849,9 @@ impl<const N: usize, K, V, S, SI> IntoIterator for SmallMap<N, K, V, S, SI> {
     }
 }
 
-impl<'a, const N: usize, K, V, S, SI> IntoIterator for &'a SmallMap<N, K, V, S, SI> {
+impl<'a, const N: usize, K, V, SH, SI, const LINEAR_THRESHOLD: usize> IntoIterator
+    for &'a SmallMap<N, K, V, SH, SI, LINEAR_THRESHOLD>
+{
     type Item = (&'a K, &'a V);
     type IntoIter = Iter<'a, N, K, V>;
 
@@ -780,7 +866,9 @@ impl<'a, const N: usize, K, V, S, SI> IntoIterator for &'a SmallMap<N, K, V, S, 
     }
 }
 
-impl<const N: usize, K, V, S, SI> SmallMap<N, K, V, S, SI> {
+impl<const N: usize, K, V, SH, SI, const LINEAR_THRESHOLD: usize>
+    SmallMap<N, K, V, SH, SI, LINEAR_THRESHOLD>
+{
     /// Returns the number of elements in the map.
     ///
     /// # Examples
@@ -926,11 +1014,12 @@ impl<const N: usize, K, V, S, SI> SmallMap<N, K, V, S, SI> {
 }
 
 // PartialEq implementation
-impl<const N: usize, K, V, S, SI> PartialEq for SmallMap<N, K, V, S, SI>
+impl<const N: usize, K, V, SH, SI, const LINEAR_THRESHOLD: usize> PartialEq
+    for SmallMap<N, K, V, SH, SI, LINEAR_THRESHOLD>
 where
     K: Eq + Hash,
     V: PartialEq,
-    S: BuildHasher,
+    SH: BuildHasher,
     SI: BuildHasher,
 {
     fn eq(&self, other: &Self) -> bool {
@@ -942,21 +1031,23 @@ where
     }
 }
 
-impl<const N: usize, K, V, S, SI> Eq for SmallMap<N, K, V, S, SI>
+impl<const N: usize, K, V, SH, SI, const LINEAR_THRESHOLD: usize> Eq
+    for SmallMap<N, K, V, SH, SI, LINEAR_THRESHOLD>
 where
     K: Eq + Hash,
     V: Eq,
-    S: BuildHasher,
+    SH: BuildHasher,
     SI: BuildHasher,
 {
 }
 
 // Index implementation
-impl<const N: usize, K, V, S, SI, Q> Index<&Q> for SmallMap<N, K, V, S, SI>
+impl<const N: usize, K, V, SH, SI, const LINEAR_THRESHOLD: usize, Q> Index<&Q>
+    for SmallMap<N, K, V, SH, SI, LINEAR_THRESHOLD>
 where
     K: Eq + Hash,
     Q: ?Sized + Hash + Equivalent<K>,
-    S: BuildHasher,
+    SH: BuildHasher,
     SI: BuildHasher,
 {
     type Output = V;
@@ -973,10 +1064,11 @@ where
 }
 
 // Extend implementation
-impl<const N: usize, K, V, S, SI> Extend<(K, V)> for SmallMap<N, K, V, S, SI>
+impl<const N: usize, K, V, SH, SI, const LINEAR_THRESHOLD: usize> Extend<(K, V)>
+    for SmallMap<N, K, V, SH, SI, LINEAR_THRESHOLD>
 where
     K: Eq + Hash,
-    S: BuildHasher,
+    SH: BuildHasher,
     SI: BuildHasher,
 {
     #[inline]
@@ -988,10 +1080,11 @@ where
 }
 
 // FromIterator implementation
-impl<const N: usize, K, V, S, SI> FromIterator<(K, V)> for SmallMap<N, K, V, S, SI>
+impl<const N: usize, K, V, SH, SI, const LINEAR_THRESHOLD: usize> FromIterator<(K, V)>
+    for SmallMap<N, K, V, SH, SI, LINEAR_THRESHOLD>
 where
     K: Eq + Hash,
-    S: BuildHasher + Default,
+    SH: BuildHasher + Default,
     SI: BuildHasher + Default,
 {
     fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
