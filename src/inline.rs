@@ -416,9 +416,16 @@ impl<const N: usize, K, V, S, SI> Inline<N, K, V, S, SI> {
         }
     }
 
+    // This constant assertion ensures that N is not zero at compile time.
+    // The evaluation of this constant will trigger a compile-time error if N is 0.
+    const VALIDNESS_CHECK: () = assert!(N != 0, "SmallMap cannot be initialized with zero size.");
+
     #[inline]
     pub(crate) const fn new(hash_builder: SI, heap_hasher: S) -> Self {
-        assert!(N != 0, "SmallMap cannot be initialized with zero size.");
+        // Trigger compile-time check
+        #[allow(clippy::let_unit_value)]
+        let _ = Self::VALIDNESS_CHECK;
+
         Self {
             raw: RawInline {
                 // SAFETY: MaybeUninit doesn't require initialization, len tracks validity
