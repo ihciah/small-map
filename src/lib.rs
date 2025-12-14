@@ -40,15 +40,32 @@ mod macros;
 mod inline;
 mod raw;
 
+/// Re-exported from [`hashbrown`] for custom key equivalence lookups.
+///
+/// Allows using a different type for lookups than the key type stored in the map.
 pub use hashbrown::Equivalent;
 
 #[cfg(feature = "serde")]
 mod serde;
 
+/// Type alias for [`SmallMap`] using [`rapidhash`](https://docs.rs/rapidhash) as the heap hasher.
+///
+/// Since rapidhash is a fast hasher, `LINEAR_THRESHOLD` is set to 8 to prefer SIMD search earlier.
+///
+/// Requires the `rapidhash` feature.
 #[cfg(feature = "rapidhash")]
-pub type RapidSmallMap<const N: usize, K, V> = SmallMap<N, K, V, rapidhash::fast::RandomState>;
+pub type RapidSmallMap<const N: usize, K, V> =
+    SmallMap<N, K, V, rapidhash::fast::RandomState, DefaultInlineHasher, 8>;
+
+/// Type alias for [`SmallMap`] using [`rustc_hash::FxBuildHasher`] as the heap hasher.
+///
+/// Requires the `fxhash` feature.
 #[cfg(feature = "fxhash")]
 pub type FxSmallMap<const N: usize, K, V> = SmallMap<N, K, V, rustc_hash::FxBuildHasher>;
+
+/// Type alias for [`SmallMap`] using [`ahash::AHasher`] as the heap hasher.
+///
+/// Requires the `ahash` feature.
 #[cfg(feature = "ahash")]
 pub type ASmallMap<const N: usize, K, V> =
     SmallMap<N, K, V, core::hash::BuildHasherDefault<ahash::AHasher>>;
