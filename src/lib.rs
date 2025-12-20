@@ -1998,59 +1998,82 @@ mod tests {
 
         // Setup:
         // Map has 3 items.
-        // Item 0: Don't panic.
-        // Item 1: Panic on clone.
-        // Item 2: Don't panic.
-        let mut map: SmallMap<8, i32, PanicOnClone> = SmallMap::new();
-        map.insert(
-            0,
-            PanicOnClone {
-                should_panic: false,
-                data: 0,
-            },
-        );
+        let mut map = SmallMap::<4, i32, PanicOnClone>::with_capacity(4);
         map.insert(
             1,
             PanicOnClone {
-                should_panic: true,
-                data: 1,
+                should_panic: false,
+                data: 10,
             },
         );
         map.insert(
             2,
             PanicOnClone {
+                should_panic: true, // This one will panic
+                data: 20,
+            },
+        );
+        map.insert(
+            3,
+            PanicOnClone {
                 should_panic: false,
-                data: 2,
+                data: 30,
             },
         );
 
-        // Reset global counter
-        DROP_COUNT.store(0, Ordering::SeqCst);
-
-        // Action:
-        // Try to clone. This should panic.
-        // During clone:
-        // 1. Item 0 is cloned -> New Item 0 created.
-        // 2. Item 1 clone starts -> Panics.
-        //
-        // Cleanup expected:
-        // - New Item 0 should be dropped.
-        //
-        // Note: The original items are still in `map` and shouldn't be dropped yet.
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _ = map.clone();
         }));
 
-        assert!(result.is_err(), "Clone should have panicked");
+        assert!(res.is_err());
+        // Original map should still be valid/safe to drop
+        // Dropping map...
+        drop(map);
 
-        // Verification:
-        // We expect exactly 1 drop (the New Item 0 that was successfully cloned before the panic).
-        // If the implementation is not panic-safe, this will be 0 (leak).
-        let drops = DROP_COUNT.load(Ordering::SeqCst);
-        assert_eq!(
-            drops, 1,
-            "Leaked memory on panic! Expected 1 drop (the partially cloned element), got {}",
-            drops
-        );
+        // Check leak
+        // 3 items in map. Panic on 2nd item clone.
+        // 1st item cloned successfully.
+        // On panic:
+        // - Cloned 1st item should be dropped (by DropGuard).
+        // - Original 3 items should be dropped (when map is dropped).
+        // Total drops: 1 (cloned) + 3 (original) = 4.
+        assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 4);
+    }
+
+    #[test]
+    fn test_inline_insert_unique_hash_consistency() {
+        // N=8, LINEAR_THRESHOLD=4
+        // Group::WIDTH = 16 (SSE2) or 8 (NEON) or 8 (Generic).
+        // If Group::WIDTH == 16, N <= Group::WIDTH (8 <= 16) is True.
+        // N < LINEAR_THRESHOLD (8 < 4) is False.
+        // MIN_LINEAR_LEN = 4.
+
+        // We use a custom threshold of 4.
+        type BugMap = SmallMap<8, i32, i32, RandomState, RandomState, 4>;
+        let mut map = BugMap::new();
+
+        unsafe {
+            map.insert_unique_unchecked(1, 10);
+            map.insert_unique_unchecked(2, 20);
+            map.insert_unique_unchecked(3, 30);
+            map.insert_unique_unchecked(4, 40);
+            map.insert_unique_unchecked(5, 50);
+        }
+
+        // Now len=5.
+        // find logic:
+        // if N < LINEAR_THRESHOLD (8<4 False) || len < MIN_LINEAR_LEN (5<4 False)
+        // -> SIMD Search.
+
+        // If insert_unique_unchecked skipped hash updates (because N <= Group::WIDTH),
+        // SIMD search will fail to find keys (hashes are 0/garbage).
+
+        // If Group::WIDTH is 8 (Generic/Neon), then N <= Group::WIDTH (8<=8) is True.
+        // So the bug exists there too.
+
+        // Only if Group::WIDTH < 8 (impossible) would the bug be hidden.
+
+        assert_eq!(map.get(&1), Some(&10), "Failed to find 1");
+        assert_eq!(map.get(&5), Some(&50), "Failed to find 5");
     }
 }

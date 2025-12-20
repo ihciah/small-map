@@ -567,7 +567,7 @@ where
     #[inline]
     pub(crate) unsafe fn insert_unique_unchecked(&mut self, k: K, v: V) -> (&K, &mut V) {
         let len = self.raw.len;
-        if N <= Group::WIDTH {
+        if N < LINEAR_THRESHOLD {
             self.raw.data[len].write((k, v));
             self.raw.len = len + 1;
             let item = self.raw.data[len].assume_init_mut();
