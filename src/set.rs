@@ -223,11 +223,11 @@ impl<const N: usize, T, SH, SI, const LINEAR_THRESHOLD: usize>
     /// # Examples
     ///
     /// ```
-    /// use std::hash::{BuildHasherDefault, DefaultHasher};
+    /// use std::collections::hash_map::RandomState;
     ///
     /// use small_map::SmallSet;
     ///
-    /// let s = BuildHasherDefault::<DefaultHasher>::default();
+    /// let s = RandomState::default();
     /// let mut set = SmallSet::<8, _>::with_hasher(s);
     /// set.insert(1);
     /// ```
@@ -250,12 +250,12 @@ impl<const N: usize, T, SH, SI, const LINEAR_THRESHOLD: usize>
     /// # Examples
     ///
     /// ```
-    /// use std::hash::{BuildHasherDefault, DefaultHasher};
+    /// use std::collections::hash_map::RandomState;
     ///
     /// use small_map::SmallSet;
     ///
-    /// let heap_hasher = BuildHasherDefault::<DefaultHasher>::default();
-    /// let inline_hasher = BuildHasherDefault::<DefaultHasher>::default();
+    /// let heap_hasher = RandomState::default();
+    /// let inline_hasher = rapidhash::fast::RandomState::default();
     /// let mut set = SmallSet::<8, _>::with_hashers(heap_hasher, inline_hasher);
     /// set.insert(1);
     /// ```
@@ -275,11 +275,11 @@ impl<const N: usize, T, SH, SI, const LINEAR_THRESHOLD: usize>
     /// # Examples
     ///
     /// ```
-    /// use std::hash::{BuildHasherDefault, DefaultHasher};
+    /// use std::collections::hash_map::RandomState;
     ///
     /// use small_map::SmallSet;
     ///
-    /// let s = BuildHasherDefault::<DefaultHasher>::default();
+    /// let s = RandomState::default();
     /// let mut set = SmallSet::<8, _>::with_capacity_and_hasher(10, s);
     /// set.insert(1);
     /// ```
@@ -302,12 +302,12 @@ impl<const N: usize, T, SH, SI, const LINEAR_THRESHOLD: usize>
     /// # Examples
     ///
     /// ```
-    /// use std::hash::{BuildHasherDefault, DefaultHasher};
+    /// use std::collections::hash_map::RandomState;
     ///
     /// use small_map::SmallSet;
     ///
-    /// let heap_hasher = BuildHasherDefault::<DefaultHasher>::default();
-    /// let inline_hasher = BuildHasherDefault::<DefaultHasher>::default();
+    /// let heap_hasher = RandomState::default();
+    /// let inline_hasher = rapidhash::fast::RandomState::default();
     /// let mut set = SmallSet::<8, _>::with_capacity_and_hashers(10, heap_hasher, inline_hasher);
     /// set.insert(1);
     /// ```
