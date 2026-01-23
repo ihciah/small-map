@@ -270,7 +270,7 @@ impl<const N: usize, T, SH, SI, const LINEAR_THRESHOLD: usize>
     /// `heap_hasher` to hash the keys.
     ///
     /// The set will be able to hold at least `capacity` elements without
-    /// reallocating. If `capacity` is 0, the set will not allocate.
+    /// reallocating. If `capacity` is smaller than or eq to N, the hash map will not allocate.
     ///
     /// # Examples
     ///
