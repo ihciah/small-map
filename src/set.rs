@@ -52,12 +52,78 @@ use crate::{DefaultInlineHasher, Equivalent, SmallMap, DEFAULT_LINEAR_THRESHOLD}
 /// ```
 /// use small_map::SmallSet;
 ///
-/// let mut set: SmallSet<8, &str> = SmallSet::new();
-/// set.insert("a");
-/// set.insert("b");
+/// // Type inference lets us omit an explicit type signature (which
+/// // would be `SmallSet<8, String>` in this example).
+/// let mut books = SmallSet::<8, _>::new();
 ///
-/// assert!(set.contains(&"a"));
-/// assert!(set.is_inline()); // Still stored inline
+/// // Add some books.
+/// books.insert("A Dance With Dragons".to_string());
+/// books.insert("To Kill a Mockingbird".to_string());
+/// books.insert("The Odyssey".to_string());
+/// books.insert("The Great Gatsby".to_string());
+///
+/// // Check for a specific one.
+/// if !books.contains("The Winds of Winter") {
+///     println!(
+///         "We have {} books, but The Winds of Winter ain't one.",
+///         books.len()
+///     );
+/// }
+///
+/// // Remove a book.
+/// books.remove("The Odyssey");
+///
+/// // Iterate over everything.
+/// for book in &books {
+///     println!("{}", book);
+/// }
+/// ```
+///
+/// The easiest way to use `SmallSet` with a custom type is to derive
+/// [`Eq`] and [`Hash`]. We must also derive [`PartialEq`]. This will in the
+/// future be implied by [`Eq`].
+///
+/// ```
+/// use small_map::SmallSet;
+///
+/// #[derive(Hash, Eq, PartialEq, Debug)]
+/// struct Viking {
+///     name: String,
+///     power: usize,
+/// }
+///
+/// let mut vikings = SmallSet::<8, _>::new();
+///
+/// vikings.insert(Viking {
+///     name: "Einar".to_string(),
+///     power: 9,
+/// });
+/// vikings.insert(Viking {
+///     name: "Einar".to_string(),
+///     power: 9,
+/// });
+/// vikings.insert(Viking {
+///     name: "Olaf".to_string(),
+///     power: 4,
+/// });
+/// vikings.insert(Viking {
+///     name: "Harald".to_string(),
+///     power: 8,
+/// });
+///
+/// // Use derived implementation to print the vikings.
+/// for x in &vikings {
+///     println!("{:?}", x);
+/// }
+/// ```
+///
+/// A `SmallSet` with a fixed list of elements can be initialized from an array:
+///
+/// ```
+/// use small_map::SmallSet;
+///
+/// let viking_names: SmallSet<8, &'static str> = ["Einar", "Olaf", "Harald"].into_iter().collect();
+/// // use the values stored in the set
 /// ```
 ///
 /// [`Cell`]: core::cell::Cell
@@ -504,12 +570,13 @@ impl<const N: usize, T, SH, SI, const LINEAR_THRESHOLD: usize>
     /// ```
     /// use small_map::SmallSet;
     ///
-    /// let mut set: SmallSet<8, &str> = SmallSet::new();
+    /// let mut set = SmallSet::<8, _>::new();
     /// set.insert("a");
     /// set.insert("b");
     ///
-    /// for val in set.iter() {
-    ///     println!("{}", val);
+    /// // Will print in an arbitrary order.
+    /// for x in set.iter() {
+    ///     println!("{}", x);
     /// }
     /// ```
     #[inline]
@@ -750,5 +817,113 @@ mod tests {
         assert!(set.contains(&2));
         assert!(!set.contains(&1));
         assert!(!set.contains(&3));
+    }
+
+    #[test]
+    fn test_get() {
+        let set: SmallSet<8, _> = [1, 2, 3].into_iter().collect();
+        assert_eq!(set.get(&2), Some(&2));
+        assert_eq!(set.get(&4), None);
+    }
+
+    #[test]
+    fn test_take() {
+        let mut set: SmallSet<8, i32> = SmallSet::new();
+        set.insert(1);
+        set.insert(2);
+        assert_eq!(set.take(&1), Some(1));
+        assert_eq!(set.take(&1), None);
+        assert_eq!(set.len(), 1);
+        assert!(set.contains(&2));
+    }
+
+    #[test]
+    fn test_replace() {
+        let mut set: SmallSet<8, i32> = SmallSet::new();
+        set.insert(1);
+        assert_eq!(set.replace(1), Some(1));
+        assert_eq!(set.replace(2), None);
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn test_capacity() {
+        let set: SmallSet<16, i32> = SmallSet::new();
+        assert_eq!(set.capacity(), 16);
+
+        let set: SmallSet<8, i32> = SmallSet::with_capacity(20);
+        assert!(set.capacity() >= 20);
+        assert!(!set.is_inline());
+    }
+
+    #[test]
+    fn test_debug() {
+        let mut set: SmallSet<8, i32> = SmallSet::new();
+        set.insert(1);
+        set.insert(2);
+        let debug_str = format!("{:?}", set);
+        assert!(debug_str.contains('1'));
+        assert!(debug_str.contains('2'));
+    }
+
+    #[test]
+    fn test_extend() {
+        let mut set: SmallSet<8, i32> = SmallSet::new();
+        set.extend([1, 2, 3]);
+        assert_eq!(set.len(), 3);
+        set.extend([3, 4, 5]);
+        assert_eq!(set.len(), 5);
+    }
+
+    #[test]
+    fn test_into_iterator() {
+        let set: SmallSet<8, i32> = [1, 2, 3].into_iter().collect();
+        let mut vec: Vec<_> = set.into_iter().collect();
+        vec.sort();
+        assert_eq!(vec, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn test_clone() {
+        let set1: SmallSet<8, i32> = [1, 2, 3].into_iter().collect();
+        let set2 = set1.clone();
+        assert_eq!(set1, set2);
+    }
+
+    #[test]
+    fn test_with_hasher() {
+        use std::{collections::hash_map::DefaultHasher, hash::BuildHasherDefault};
+
+        let s = BuildHasherDefault::<DefaultHasher>::default();
+        let mut set = SmallSet::<8, i32, _>::with_hasher(s);
+        set.insert(1);
+        assert!(set.contains(&1));
+    }
+
+    #[test]
+    fn test_clear() {
+        let mut set: SmallSet<8, i32> = [1, 2, 3].into_iter().collect();
+        assert_eq!(set.len(), 3);
+        set.clear();
+        assert_eq!(set.len(), 0);
+        assert!(set.is_empty());
+    }
+
+    #[test]
+    fn test_insert_duplicates() {
+        let mut set: SmallSet<8, i32> = SmallSet::new();
+        assert!(set.insert(1));
+        assert!(!set.insert(1));
+        assert_eq!(set.len(), 1);
+    }
+
+    #[test]
+    fn test_contains_different_types() {
+        let mut set: SmallSet<8, String> = SmallSet::new();
+        set.insert("hello".to_string());
+
+        // Test with &str
+        assert!(set.contains("hello"));
+        assert!(!set.contains("world"));
     }
 }
