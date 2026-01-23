@@ -39,11 +39,13 @@ use inline::Inline;
 mod macros;
 mod inline;
 mod raw;
+mod set;
 
 /// Re-exported from [`hashbrown`] for custom key equivalence lookups.
 ///
 /// Allows using a different type for lookups than the key type stored in the map.
 pub use hashbrown::Equivalent;
+pub use set::SmallSet;
 
 #[cfg(feature = "serde")]
 mod serde;
@@ -69,6 +71,28 @@ pub type FxSmallMap<const N: usize, K, V> = SmallMap<N, K, V, rustc_hash::FxBuil
 #[cfg(feature = "ahash")]
 pub type ASmallMap<const N: usize, K, V> =
     SmallMap<N, K, V, core::hash::BuildHasherDefault<ahash::AHasher>>;
+
+/// Type alias for [`SmallSet`] using [`rapidhash`](https://docs.rs/rapidhash) as the heap hasher.
+///
+/// Since rapidhash is a fast hasher, `LINEAR_THRESHOLD` is set to 8 to prefer SIMD search earlier.
+///
+/// Requires the `rapidhash` feature.
+#[cfg(feature = "rapidhash")]
+pub type RapidSmallSet<const N: usize, T> =
+    SmallSet<N, T, rapidhash::fast::RandomState, DefaultInlineHasher, 8>;
+
+/// Type alias for [`SmallSet`] using [`rustc_hash::FxBuildHasher`] as the heap hasher.
+///
+/// Requires the `fxhash` feature.
+#[cfg(feature = "fxhash")]
+pub type FxSmallSet<const N: usize, T> = SmallSet<N, T, rustc_hash::FxBuildHasher>;
+
+/// Type alias for [`SmallSet`] using [`ahash::AHasher`] as the heap hasher.
+///
+/// Requires the `ahash` feature.
+#[cfg(feature = "ahash")]
+pub type ASmallSet<const N: usize, T> =
+    SmallSet<N, T, core::hash::BuildHasherDefault<ahash::AHasher>>;
 
 #[cfg(feature = "rapidhash")]
 type DefaultInlineHasher = rapidhash::fast::RandomState;
@@ -692,6 +716,15 @@ impl<'a, const N: usize, K, V> Clone for Iter<'a, N, K, V> {
 /// An iterator over the keys of a `SmallMap`.
 pub struct Keys<'a, const N: usize, K, V> {
     inner: Iter<'a, N, K, V>,
+}
+
+impl<'a, const N: usize, K, V> Clone for Keys<'a, N, K, V> {
+    #[inline]
+    fn clone(&self) -> Self {
+        Keys {
+            inner: self.inner.clone(),
+        }
+    }
 }
 
 impl<'a, const N: usize, K, V> Iterator for Keys<'a, N, K, V> {

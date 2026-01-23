@@ -11,6 +11,8 @@ An inline SIMD accelerated hashmap designed for small amount of data.
 
 ## Usage
 
+### SmallMap
+
 ```rust
 use small_map::FxSmallMap;
 // Don't worry about the 32 here, it's the inline size, not the limitation.
@@ -25,6 +27,22 @@ assert_eq!(*map.get(&1).unwrap(), 2);
 Usually you can use this map for short lifetime and small key/values, for example, http or RPC headers.
 
 You can use it like other normal hashmaps without worrying about its size.
+
+### SmallSet
+
+```rust
+use small_map::FxSmallSet;
+// Similar to SmallMap, but for sets (collection of unique values)
+type MySmallSet<T> = FxSmallSet<32, T>;
+
+let mut set = MySmallSet::new();
+set.insert(1_u8);
+set.insert(2_u8);
+assert!(set.contains(&1));
+assert_eq!(set.len(), 2);
+```
+
+SmallSet is implemented as a wrapper around SmallMap where the value is `()`, providing the same performance benefits for small collections of unique values.
 
 ## Choosing N
 
