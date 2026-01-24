@@ -20,7 +20,7 @@ use crate::{DefaultInlineHasher, Equivalent, SmallMap, DEFAULT_LINEAR_THRESHOLD}
 /// k1 == k2 -> hash(k1) == hash(k2)
 /// ```
 ///
-/// In other words, if two keys are equal, their hashes must be equal.
+/// In other words, if two elements are equal, their hashes must be equal.
 ///
 /// It is a logic error for an item to be modified in such a way that the
 /// item's hash, as determined by the [`Hash`] trait, or its equality, as
@@ -28,7 +28,7 @@ use crate::{DefaultInlineHasher, Equivalent, SmallMap, DEFAULT_LINEAR_THRESHOLD}
 /// normally only possible through [`Cell`], [`RefCell`], global state, I/O, or
 /// unsafe code.
 ///
-/// It is also a logic error for the [`Hash`] implementation of a key to panic.
+/// It is also a logic error for the [`Hash`] implementation of an element to panic.
 /// This is generally only possible if the trait is implemented manually. If a
 /// panic does occur then the contents of the `SmallSet` may become corrupted and
 /// some items may be dropped from the table.
@@ -215,7 +215,7 @@ impl<const N: usize, T, SH, SI, const LINEAR_THRESHOLD: usize>
     SmallSet<N, T, SH, SI, LINEAR_THRESHOLD>
 {
     /// Creates an empty `SmallSet` which will use the given hash builder to hash
-    /// keys.
+    /// elements.
     ///
     /// The set is initially created with a capacity of N, so it will not allocate until it
     /// grows beyond that threshold.
@@ -242,7 +242,7 @@ impl<const N: usize, T, SH, SI, const LINEAR_THRESHOLD: usize>
     }
 
     /// Creates an empty `SmallSet` which will use the given hash builders to hash
-    /// keys.
+    /// elements.
     ///
     /// The set is initially created with a capacity of N, so it will not allocate until it
     /// grows beyond that threshold.
@@ -267,10 +267,10 @@ impl<const N: usize, T, SH, SI, const LINEAR_THRESHOLD: usize>
     }
 
     /// Creates an empty `SmallSet` with the specified capacity, using
-    /// `heap_hasher` to hash the keys.
+    /// `heap_hasher` to hash the elements.
     ///
     /// The set will be able to hold at least `capacity` elements without
-    /// reallocating. If `capacity` is smaller than or eq to N, the hash map will not allocate.
+    /// reallocating. If `capacity` is smaller than or eq to N, the set will not allocate.
     ///
     /// # Examples
     ///
@@ -297,7 +297,7 @@ impl<const N: usize, T, SH, SI, const LINEAR_THRESHOLD: usize>
     /// `heap_hasher` for heap storage and `inline_hasher` for inline storage.
     ///
     /// The set will be able to hold at least `capacity` elements without
-    /// reallocating. If `capacity` is smaller than N, the set will not allocate.
+    /// reallocating. If `capacity` is smaller than or eq to N, the set will not allocate.
     ///
     /// # Examples
     ///
