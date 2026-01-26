@@ -36,7 +36,7 @@ use crate::{DefaultInlineHasher, Equivalent, SmallMap, DEFAULT_LINEAR_THRESHOLD}
 /// # Type Parameters
 ///
 /// - `N`: Maximum number of elements to store inline (must be > 0). When the set exceeds this size,
-///   it automatically spills to a heap-allocated `HashSet`.
+///   it automatically spills to a heap-allocated hash table.
 ///
 /// - `T`: Element type. Must implement `Eq + Hash` for most operations.
 ///
