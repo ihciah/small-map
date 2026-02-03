@@ -23,11 +23,13 @@ mod size_hint {
     }
 }
 
-impl<const N: usize, K, V, H> Serialize for SmallMap<N, K, V, H>
+impl<const N: usize, K, V, SH, SI, const LINEAR_THRESHOLD: usize> Serialize
+    for SmallMap<N, K, V, SH, SI, LINEAR_THRESHOLD>
 where
     K: Serialize + Eq + Hash,
     V: Serialize,
-    H: BuildHasher,
+    SH: BuildHasher,
+    SI: BuildHasher,
 {
     #[inline]
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -38,27 +40,31 @@ where
     }
 }
 
-impl<'de, const N: usize, K, V, S> Deserialize<'de> for SmallMap<N, K, V, S>
+impl<'de, const N: usize, K, V, SH, SI, const LINEAR_THRESHOLD: usize> Deserialize<'de>
+    for SmallMap<N, K, V, SH, SI, LINEAR_THRESHOLD>
 where
     K: Deserialize<'de> + Eq + Hash,
     V: Deserialize<'de>,
-    S: BuildHasher + Default,
+    SH: BuildHasher + Default,
+    SI: BuildHasher + Default,
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        struct MapVisitor<const N: usize, K, V, S> {
-            marker: PhantomData<SmallMap<N, K, V, S>>,
+        struct MapVisitor<const N: usize, K, V, SH, SI, const LINEAR_THRESHOLD: usize> {
+            marker: PhantomData<SmallMap<N, K, V, SH, SI, LINEAR_THRESHOLD>>,
         }
 
-        impl<'de, const N: usize, K, V, S> Visitor<'de> for MapVisitor<N, K, V, S>
+        impl<'de, const N: usize, K, V, SH, SI, const LINEAR_THRESHOLD: usize> Visitor<'de>
+            for MapVisitor<N, K, V, SH, SI, LINEAR_THRESHOLD>
         where
             K: Deserialize<'de> + Eq + Hash,
             V: Deserialize<'de>,
-            S: BuildHasher + Default,
+            SH: BuildHasher + Default,
+            SI: BuildHasher + Default,
         {
-            type Value = SmallMap<N, K, V, S>;
+            type Value = SmallMap<N, K, V, SH, SI, LINEAR_THRESHOLD>;
 
             fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
                 formatter.write_str("a map")
@@ -69,9 +75,10 @@ where
             where
                 M: MapAccess<'de>,
             {
-                let mut values = SmallMap::with_capacity_and_hasher(
+                let mut values = SmallMap::with_capacity_and_hashers(
                     size_hint::cautious(map.size_hint()),
-                    S::default(),
+                    SH::default(),
+                    SI::default(),
                 );
 
                 while let Some((key, value)) = map.next_entry()? {

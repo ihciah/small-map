@@ -1,15 +1,14 @@
 use core::{
     hash::{BuildHasher, Hash},
     iter::FusedIterator,
-    mem::{self, transmute, ManuallyDrop, MaybeUninit},
-    ptr::NonNull,
+    mem::{self, ManuallyDrop, MaybeUninit},
 };
 
 use crate::{
     raw::{
         h2,
         util::{
-            equivalent_key, likely, make_hash, unlikely, Bucket, InsertSlot, SizedTypeProperties,
+            equivalent_key, likely, make_hash, unlikely, InsertSlot, SizedTypeProperties,
         },
         Group,
     },
@@ -80,8 +79,7 @@ impl<const N: usize, T: Clone, const LINEAR_THRESHOLD: usize> Clone
             }
         }
 
-        // SAFETY: MaybeUninit doesn't require initialization
-        let mut aligned_groups: AlignedGroups<N> = unsafe { MaybeUninit::uninit().assume_init() };
+        let mut aligned_groups = AlignedGroups::new();
         let mut data: [MaybeUninit<T>; N] = unsafe { MaybeUninit::uninit().assume_init() };
 
         let mut guard = DropGuard {
@@ -111,13 +109,42 @@ impl<const N: usize, T: Clone, const LINEAR_THRESHOLD: usize> Clone
 #[derive(Clone, Copy)]
 pub(crate) struct AlignedGroups<const N: usize> {
     groups: [MaybeUninit<u8>; N],
+    #[cfg(any(feature = "init-ctrl", miri))]
+    padding: [MaybeUninit<u8>; Group::WIDTH - 1],
     _align: [Group; 0],
 }
 
 impl<const N: usize> AlignedGroups<N> {
     #[inline]
-    unsafe fn ctrl(&self, index: usize) -> *mut u8 {
-        (self.groups.as_ptr() as *const u8).add(index).cast_mut()
+    const fn new() -> Self {
+        #[cfg(any(feature = "init-ctrl", miri))]
+        {
+            Self {
+                groups: [MaybeUninit::new(0u8); N],
+                padding: [MaybeUninit::new(0u8); Group::WIDTH - 1],
+                _align: [],
+            }
+        }
+        #[cfg(not(any(feature = "init-ctrl", miri)))]
+        {
+            // SAFETY: MaybeUninit doesn't require initialization.
+            unsafe { MaybeUninit::uninit().assume_init() }
+        }
+    }
+
+    #[inline]
+    unsafe fn ctrl_read(&self, index: usize) -> *const u8 {
+        let base = (self as *const Self).cast::<u8>();
+        let offset = core::mem::offset_of!(Self, groups);
+        base.add(offset + index)
+    }
+
+    #[inline]
+    unsafe fn ctrl_write(&mut self, index: usize) -> *mut u8 {
+        debug_assert!(index < N);
+        let base = (self as *mut Self).cast::<u8>();
+        let offset = core::mem::offset_of!(Self, groups);
+        base.add(offset + index)
     }
 }
 
@@ -154,12 +181,12 @@ impl<const N: usize, T, const LINEAR_THRESHOLD: usize> RawInline<N, T, LINEAR_TH
         &self,
         hash: &mut HashValue<F>,
         mut eq: impl FnMut(&T) -> bool,
-    ) -> Option<Bucket<T>> {
+    ) -> Option<usize> {
         if N < LINEAR_THRESHOLD || self.len < Self::MIN_LINEAR_LEN {
             // Linear search - no hash needed
             for i in 0..self.len {
                 if eq(unsafe { self.data.get_unchecked(i).assume_init_ref() }) {
-                    return Some(unsafe { self.bucket(i) });
+                    return Some(i);
                 }
             }
             None
@@ -171,12 +198,12 @@ impl<const N: usize, T, const LINEAR_THRESHOLD: usize> RawInline<N, T, LINEAR_TH
                 let mut probe_pos = 0;
 
                 for _ in 0..full_groups {
-                    let group = Group::load(self.aligned_groups.ctrl(probe_pos));
+                    let group = Group::load(self.aligned_groups.ctrl_read(probe_pos));
                     for bit in group.match_byte(h2_hash) {
                         let index = probe_pos + bit;
                         let item: &T = self.data.get_unchecked(index).assume_init_ref();
                         if likely(eq(item)) {
-                            return Some(self.bucket(index));
+                            return Some(index);
                         }
                     }
                     probe_pos += Group::WIDTH;
@@ -184,12 +211,12 @@ impl<const N: usize, T, const LINEAR_THRESHOLD: usize> RawInline<N, T, LINEAR_TH
 
                 let tail_len = self.len % Group::WIDTH;
                 if tail_len > 0 {
-                    let group = Group::load(self.aligned_groups.ctrl(probe_pos));
+                    let group = Group::load(self.aligned_groups.ctrl_read(probe_pos));
                     for bit in group.match_byte(h2_hash).and(Group::LOWEST_MASK[tail_len]) {
                         let index = probe_pos + bit;
                         let item: &T = self.data.get_unchecked(index).assume_init_ref();
                         if likely(eq(item)) {
-                            return Some(self.bucket(index));
+                            return Some(index);
                         }
                     }
                 }
@@ -201,13 +228,11 @@ impl<const N: usize, T, const LINEAR_THRESHOLD: usize> RawInline<N, T, LINEAR_TH
     /// Inserts a new element into the table in the given slot, and returns its
     /// raw bucket.
     #[inline]
-    unsafe fn insert_in_slot(&mut self, hash: u64, slot: InsertSlot, value: T) -> Bucket<T> {
+    unsafe fn insert_in_slot(&mut self, hash: u64, slot: InsertSlot, value: T) {
         // SAFETY: The caller must uphold the safety rules for the [`RawTableInner::set_ctrl_h2`]
-        *self.aligned_groups.ctrl(slot.index) = h2(hash);
+        *self.aligned_groups.ctrl_write(slot.index) = h2(hash);
         self.len += 1;
-        let bucket = self.bucket(slot.index);
-        bucket.write(value);
-        bucket
+        self.data[slot.index].write(value);
     }
 
     /// Finds and removes an element from the table.
@@ -218,7 +243,7 @@ impl<const N: usize, T, const LINEAR_THRESHOLD: usize> RawInline<N, T, LINEAR_TH
         eq: impl FnMut(&T) -> bool,
     ) -> Option<T> {
         match self.find(hash, eq) {
-            Some(bucket) => Some(unsafe { self.remove(bucket).0 }),
+            Some(index) => Some(unsafe { self.remove_index(index) }),
             None => None,
         }
     }
@@ -226,19 +251,11 @@ impl<const N: usize, T, const LINEAR_THRESHOLD: usize> RawInline<N, T, LINEAR_TH
     /// Removes an element from the table, returning it.
     /// Uses swap-delete: swaps with last element to maintain contiguity.
     #[inline]
-    #[allow(clippy::needless_pass_by_value)]
-    unsafe fn remove(&mut self, item: Bucket<T>) -> (T, InsertSlot) {
-        let index = self.bucket_index(&item);
+    unsafe fn remove_index(&mut self, index: usize) -> T {
         // Read value before swap-delete
-        let value = item.read();
+        let value = self.data[index].assume_init_read();
         self.erase(index);
-        (value, InsertSlot { index })
-    }
-
-    /// Returns the index of a bucket from a `Bucket`.
-    #[inline]
-    unsafe fn bucket_index(&self, bucket: &Bucket<T>) -> usize {
-        bucket.to_base_index(NonNull::new_unchecked(self.data.as_ptr() as _))
+        value
     }
 
     /// Erases the element at index using swap-delete.
@@ -258,16 +275,6 @@ impl<const N: usize, T, const LINEAR_THRESHOLD: usize> RawInline<N, T, LINEAR_TH
         self.len -= 1;
     }
 
-    /// Returns a pointer to an element in the table.
-    #[inline]
-    unsafe fn bucket(&self, index: usize) -> Bucket<T> {
-        Bucket::from_base_index(
-            NonNull::new_unchecked(transmute::<*mut MaybeUninit<T>, *mut T>(
-                self.data.as_ptr().cast_mut(),
-            )),
-            index,
-        )
-    }
 }
 
 impl<const N: usize, K, V, const LINEAR_THRESHOLD: usize> RawInline<N, (K, V), LINEAR_THRESHOLD> {
@@ -439,8 +446,7 @@ impl<const N: usize, K, V, SH, SI, const LINEAR_THRESHOLD: usize>
 
         Self {
             raw: RawInline {
-                // SAFETY: MaybeUninit doesn't require initialization, len tracks validity
-                aligned_groups: unsafe { MaybeUninit::uninit().assume_init() },
+                aligned_groups: AlignedGroups::new(),
                 len: 0,
                 data: unsafe { MaybeUninit::uninit().assume_init() },
             },
@@ -548,7 +554,10 @@ where
             let hash_builder = self.inline_hasher.as_ref().unwrap();
             let mut hash = HashValue::new(|| make_hash::<K, SI>(hash_builder, &k));
             match self.raw.find(&mut hash, equivalent_key(&k)) {
-                Some(bucket) => Some(mem::replace(unsafe { &mut bucket.as_mut().1 }, v)),
+                Some(index) => {
+                    let item = unsafe { self.raw.data.get_unchecked_mut(index).assume_init_mut() };
+                    Some(mem::replace(&mut item.1, v))
+                }
                 None => {
                     let slot = InsertSlot {
                         index: self.raw.len,
@@ -576,9 +585,9 @@ where
             let hash_builder = self.inline_hasher.as_ref().unwrap();
             let hash = make_hash::<K, SI>(hash_builder, &k);
             let slot = InsertSlot { index: len };
-            let bucket = self.raw.insert_in_slot(hash, slot, (k, v));
-            let (k, v) = bucket.as_mut();
-            (k, v)
+            self.raw.insert_in_slot(hash, slot, (k, v));
+            let item = self.raw.data[len].assume_init_mut();
+            (&item.0, &mut item.1)
         }
     }
 
@@ -613,7 +622,7 @@ where
         }
         let mut hash = HashValue::new(|| make_hash::<Q, SI>(self.inline_hasher(), k));
         match self.raw.find(&mut hash, equivalent_key(k)) {
-            Some(bucket) => Some(unsafe { bucket.as_ref() }),
+            Some(index) => Some(unsafe { self.raw.data.get_unchecked(index).assume_init_ref() }),
             None => None,
         }
     }
@@ -629,7 +638,7 @@ where
         let hash_builder = self.inline_hasher.as_ref().unwrap();
         let mut hash = HashValue::new(|| make_hash::<Q, SI>(hash_builder, k));
         match self.raw.find(&mut hash, equivalent_key(k)) {
-            Some(bucket) => Some(unsafe { bucket.as_mut() }),
+            Some(index) => Some(unsafe { self.raw.data.get_unchecked_mut(index).assume_init_mut() }),
             None => None,
         }
     }
