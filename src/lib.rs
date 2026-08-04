@@ -2109,4 +2109,41 @@ mod tests {
         assert_eq!(map.get(&1), Some(&10), "Failed to find 1");
         assert_eq!(map.get(&5), Some(&50), "Failed to find 5");
     }
+
+    #[test]
+    fn retain_panicking_drop_keeps_map_consistent() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+
+        struct PanicOnDrop {
+            tag: String,
+        }
+        impl Drop for PanicOnDrop {
+            fn drop(&mut self) {
+                if self.tag == "panic" {
+                    panic!("boom");
+                }
+            }
+        }
+
+        let mut map: SmallMap<16, u32, PanicOnDrop> = SmallMap::default();
+        for i in 0..8u32 {
+            let tag = if i == 4 {
+                "panic".to_string()
+            } else {
+                format!("ok{i}")
+            };
+            map.insert(i, PanicOnDrop { tag });
+        }
+
+        // One element's Drop panics during retain. Before the fix this left the
+        // inline storage claiming the already-dropped slots were still occupied,
+        // so dropping the map re-dropped them (double-free / UAF under ASan).
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            map.retain(|_k, _v| false);
+        }));
+        assert!(result.is_err());
+
+        // With the fix, dropping the map here must not double-drop.
+        drop(map);
+    }
 }

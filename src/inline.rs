@@ -285,8 +285,13 @@ impl<const N: usize, K, V, const LINEAR_THRESHOLD: usize> RawInline<N, (K, V), L
                 i += 1;
             } else {
                 unsafe {
-                    core::ptr::drop_in_place(self.data[i].as_mut_ptr());
+                    // Read the rejected element out first, fix up the structure
+                    // via `erase`, and only then drop it. If the destructor
+                    // panics, the container is already consistent, so the slot
+                    // is not dropped again.
+                    let removed = core::ptr::read(self.data[i].as_ptr());
                     self.erase(i);
+                    drop(removed);
                 }
                 // Don't increment i, check the swapped element
             }
