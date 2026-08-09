@@ -44,6 +44,7 @@ rapidhash = ["dep:rapidhash"]
 serde = ["dep:serde", "hashbrown/serde"]
 nightly = []
 inline-more = ["hashbrown/inline-more"]
+init-ctrl = [] # zero-fill ctrl bytes and add padding (init/clone cost only)
 
 [[bench]]
 name = "simple"

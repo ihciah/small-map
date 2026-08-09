@@ -44,6 +44,12 @@ assert_eq!(set.len(), 2);
 
 SmallSet is implemented as a wrapper around SmallMap where the value is `()`, providing the same performance benefits for small collections of unique values.
 
+## Features
+
+- `init-ctrl`: Initialize all control bytes to zero on creation/clone to avoid uninitialized SIMD reads (adds O(N) work on init/clone and `Group::WIDTH - 1` padding bytes).
+  Lookup/insert/remove paths are unchanged; the overhead is limited to init/clone and a small memory increase.
+  Recommendation: keep this disabled for best performance unless you need Miri/strict UB checking.
+
 ## Choosing N
 
 The choice of `N` involves a trade-off between inline storage benefits and struct size overhead:

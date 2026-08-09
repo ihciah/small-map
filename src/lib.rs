@@ -485,6 +485,9 @@ where
                 if raw::util::likely(!inner.is_full()) {
                     return inner.insert(key, value);
                 }
+                if let Some(existing) = inner.get_mut(&key) {
+                    return Some(core::mem::replace(existing, value));
+                }
                 // SAFETY: We just checked that inline is full.
                 unsafe { self.spill_to_heap() }.insert(key, value)
             }
@@ -1217,7 +1220,8 @@ mod tests {
     fn fuzzing() {
         let mut smallmap = SmallMap::<16, i32, i32>::default();
         let mut hashmap = HashMap::<i32, i32, RandomState>::default();
-        for _ in 0..1000000 {
+        let iterations = if cfg!(miri) { 10_000 } else { 1_000_000 };
+        for _ in 0..iterations {
             let op = Operation::random();
             op.exec(&mut smallmap, &mut hashmap);
         }
@@ -1858,6 +1862,20 @@ mod tests {
         map.insert(8, 8);
         assert!(!map.is_inline());
         assert!(map.capacity() >= 9);
+    }
+
+    #[test]
+    fn insert_existing_when_full_keeps_inline() {
+        let mut map: SmallMap<8, i32, i32> = SmallMap::new();
+
+        for i in 0..8 {
+            map.insert(i, i);
+        }
+        assert!(map.is_inline());
+
+        assert_eq!(map.insert(3, 30), Some(3));
+        assert!(map.is_inline());
+        assert_eq!(map.get(&3), Some(&30));
     }
 
     #[test]
