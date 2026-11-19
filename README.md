@@ -46,7 +46,16 @@ SmallSet is implemented as a wrapper around SmallMap where the value is `()`, pr
 
 ## `no_std` with `alloc`
 
-The `std` feature is enabled by default. To use SmallMap in a `no_std` crate, disable the default features and select an external hasher, for example:
+The `std` feature is enabled by default. To use SmallMap in a `no_std` crate, disable the default features:
+
+```toml
+[dependencies]
+small-map = { version = "0.1", default-features = false }
+```
+
+`SmallMap` and `SmallSet` then use `foldhash::fast::RandomState` by default, except on MSP430 where foldhash 0.2.0 cannot use pointer-sized atomic loads/stores and deterministic FNV-1a hashing is used instead. Neither default provides the same HashDoS resistance as std's `RandomState`, so choose hashers appropriate for untrusted keys.
+
+For the faster hasher aliases, enable an external hasher feature such as `fxhash`:
 
 ```toml
 [dependencies]
@@ -65,10 +74,32 @@ type Set<T> = FxSmallSet<16, T>;
 The `rapidhash` and `ahash` features provide corresponding `RapidSmallMap`/`RapidSmallSet` and `ASmallMap`/`ASmallSet` aliases. To use another hasher, specify both `SH` (heap storage) and `SI` (inline storage), then construct the collection with `with_hashers` or `with_capacity_and_hashers`:
 
 ```rust
+use core::hash::{BuildHasherDefault, Hasher};
 use small_map::SmallMap;
 
+#[derive(Default)]
+struct MyHasher(u64);
+
+impl Hasher for MyHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 = self.0.wrapping_mul(31).wrapping_add(u64::from(*byte));
+        }
+    }
+}
+
+type MyBuildHasher = BuildHasherDefault<MyHasher>;
 type Map<K, V> = SmallMap<16, K, V, MyBuildHasher, MyBuildHasher>;
-let map = Map::<u32, u32>::with_hashers(MyBuildHasher, MyBuildHasher);
+
+let mut map = Map::<u32, u32>::with_hashers(
+    MyBuildHasher::default(),
+    MyBuildHasher::default(),
+);
+map.insert(1, 2);
 ```
 
 Inline storage does not allocate. Growing beyond `N` spills to a `hashbrown::HashMap` and requires `alloc`; a final `no_std` binary linking the allocation-backed paths must provide a global allocator.

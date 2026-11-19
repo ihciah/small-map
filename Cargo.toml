@@ -22,6 +22,13 @@ ahash = { version = "0.8", default-features = false, optional = true }
 rustc-hash = { version = "2", default-features = false, optional = true }
 rapidhash = { version = "4", default-features = false, optional = true }
 
+# foldhash 0.2.0 requires pointer-sized atomic loads/stores in no_std builds.
+# MSP430 lacks those; its SmallMap/SmallSet defaults use a local deterministic hasher instead.
+# Use foldhash directly so Cargo resolver v1 cannot enable it through hashbrown on MSP430.
+[target.'cfg(not(target_arch = "msp430"))'.dependencies.foldhash]
+version = "0.2.0"
+default-features = false
+
 [dev-dependencies]
 rand = { version = "0.9" }
 criterion = { version = "0.8", features = ["html_reports"] }

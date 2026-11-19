@@ -16,3 +16,5 @@ small-map = { path = "../..", default-features = false }
 serde = { version = "1", default-features = false, optional = true }
 
 [workspace]
+# Keep target-specific features hostile: resolver v1 must not leak foldhash into MSP430.
+resolver = "1"

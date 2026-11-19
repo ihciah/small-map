@@ -41,8 +41,9 @@ use core::{
 /// - `T`: Element type. Must implement `Eq + Hash` for most operations.
 ///
 /// - `SH`: Hasher for heap storage. Default: `RandomState` with `std`, otherwise
-///   `hashbrown::DefaultHashBuilder`. Without `std`, enable a hasher feature and use its type
-///   alias, or specify `SH` and `SI` explicitly and construct the set with [`SmallSet::with_hashers`].
+///   `foldhash::fast::RandomState`, except on MSP430 where a deterministic FNV-1a
+///   hasher is used. Enable a hasher feature and use its type alias, or specify `SH` and `SI`
+///   explicitly with [`SmallSet::with_hashers`] to choose another hasher.
 ///
 /// - `SI`: Hasher for inline storage. Default: `DefaultInlineHasher`.
 ///
@@ -230,7 +231,7 @@ impl<const N: usize, T, SH, SI, const LINEAR_THRESHOLD: usize>
     /// use small_map::SmallSet;
     ///
     /// let s = RandomState::default();
-    /// let mut set = SmallSet::<8, _>::with_hasher(s);
+    /// let mut set = SmallSet::<8, _, RandomState>::with_hasher(s);
     /// set.insert(1);
     /// ```
     #[inline]
@@ -282,7 +283,7 @@ impl<const N: usize, T, SH, SI, const LINEAR_THRESHOLD: usize>
     /// use small_map::SmallSet;
     ///
     /// let s = RandomState::default();
-    /// let mut set = SmallSet::<8, _>::with_capacity_and_hasher(10, s);
+    /// let mut set = SmallSet::<8, _, RandomState>::with_capacity_and_hasher(10, s);
     /// set.insert(1);
     /// ```
     #[inline]

@@ -74,10 +74,9 @@ where
             where
                 M: MapAccess<'de>,
             {
-                let mut values = SmallMap::with_capacity_and_hashers(
+                let mut values = SmallMap::with_capacity_and_hasher(
                     size_hint::cautious(map.size_hint()),
                     S::default(),
-                    SI::default(),
                 );
 
                 while let Some((key, value)) = map.next_entry()? {
@@ -98,22 +97,96 @@ where
 #[cfg(test)]
 mod tests {
     use core::hash::BuildHasherDefault;
-    use std::hash::DefaultHasher;
+    use std::{collections::hash_map::RandomState, hash::DefaultHasher};
 
     use crate::SmallMap;
 
     type TestHasher = BuildHasherDefault<DefaultHasher>;
-    type TestMap = SmallMap<4, u32, u32, TestHasher, TestHasher, 1>;
+    type TestMap = SmallMap<4, u32, u32, RandomState, TestHasher, 1>;
+
+    fn roundtrip<T>(map: &T) -> T
+    where
+        T: ::serde::Serialize + ::serde::de::DeserializeOwned,
+    {
+        let json = serde_json::to_string(map).unwrap();
+        serde_json::from_str(&json).unwrap()
+    }
 
     #[test]
-    fn custom_inline_hasher_roundtrip() {
+    fn custom_inline_hasher_inline_roundtrip() {
+        let mut map = TestMap::new();
+        map.insert(1, 2);
+        map.insert(3, 4);
+        assert!(map.is_inline());
+
+        let deserialized = roundtrip(&map);
+        assert!(deserialized.is_inline());
+        assert_eq!(deserialized, map);
+    }
+
+    #[test]
+    fn custom_inline_hasher_heap_roundtrip() {
         let mut map = TestMap::new();
         for i in 0..8 {
             map.insert(i, i * 2);
         }
+        assert!(!map.is_inline());
 
-        let json = serde_json::to_string(&map).unwrap();
-        let deserialized: TestMap = serde_json::from_str(&json).unwrap();
+        let deserialized = roundtrip(&map);
+        assert!(!deserialized.is_inline());
         assert_eq!(deserialized, map);
+    }
+
+    #[test]
+    fn direct_heap_deserialization_does_not_construct_inline_hasher() {
+        use core::hash::BuildHasher;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static INLINE_DEFAULTS: AtomicUsize = AtomicUsize::new(0);
+
+        struct CountingInlineHasher;
+        impl Default for CountingInlineHasher {
+            fn default() -> Self {
+                INLINE_DEFAULTS.fetch_add(1, Ordering::SeqCst);
+                Self
+            }
+        }
+        impl BuildHasher for CountingInlineHasher {
+            type Hasher = DefaultHasher;
+
+            fn build_hasher(&self) -> Self::Hasher {
+                DefaultHasher::new()
+            }
+        }
+
+        let value = serde_json::to_value(
+            (0..8)
+                .map(|i| (i, i * 2))
+                .collect::<std::collections::BTreeMap<_, _>>(),
+        )
+        .unwrap();
+        // `Value` retains its map length, so this uses the direct-heap path.
+        let deserialized: SmallMap<4, u32, u32, RandomState, CountingInlineHasher> =
+            serde_json::from_value(value).unwrap();
+
+        assert_eq!(deserialized.len(), 8);
+        assert!(!deserialized.is_inline());
+        assert_eq!(INLINE_DEFAULTS.load(Ordering::SeqCst), 0);
+    }
+
+    #[cfg(not(feature = "std"))]
+    #[test]
+    fn default_hashers_inline_and_heap_roundtrip() {
+        for len in [2u32, 8] {
+            let mut map = SmallMap::<4, u32, u32>::new();
+            for i in 0..len {
+                map.insert(i, i * 2);
+            }
+
+            let deserialized = roundtrip(&map);
+            assert_eq!(map.is_inline(), len <= 4);
+            assert_eq!(deserialized.is_inline(), map.is_inline());
+            assert_eq!(deserialized, map);
+        }
     }
 }

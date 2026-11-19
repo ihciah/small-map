@@ -33,6 +33,26 @@ impl BuildHasher for TestBuildHasher {
 pub type TestMap = SmallMap<2, u32, u32, TestBuildHasher, TestBuildHasher>;
 pub type TestSet = SmallSet<2, u32, TestBuildHasher, TestBuildHasher>;
 
+pub fn exercise_default_map() -> SmallMap<2, u32, u32> {
+    let mut map = SmallMap::new();
+    for i in 0..4 {
+        map.insert(i, i * 2);
+    }
+    let _ = map.get(&1);
+    map.remove(&0);
+    map
+}
+
+pub fn exercise_default_set() -> SmallSet<2, u32> {
+    let mut set = SmallSet::new();
+    for i in 0..4 {
+        set.insert(i);
+    }
+    let _ = set.contains(&1);
+    set.remove(&0);
+    set
+}
+
 pub fn exercise_map() -> TestMap {
     let mut map = TestMap::with_hashers(TestBuildHasher, TestBuildHasher);
     for i in 0..4 {
@@ -88,5 +108,12 @@ pub fn assert_serde_impls() {
     {
     }
 
+    assert_impl::<SmallMap<2, u32, u32>>();
     assert_impl::<TestMap>();
+    #[cfg(feature = "fxhash")]
+    assert_impl::<small_map::FxSmallMap<2, u32, u32>>();
+    #[cfg(feature = "rapidhash")]
+    assert_impl::<small_map::RapidSmallMap<2, u32, u32>>();
+    #[cfg(feature = "ahash")]
+    assert_impl::<small_map::ASmallMap<2, u32, u32>>();
 }
