@@ -1,3 +1,4 @@
+#![cfg_attr(not(feature = "std"), no_std)]
 #![allow(clippy::manual_map)]
 #![cfg_attr(feature = "nightly", allow(internal_features))]
 #![cfg_attr(feature = "nightly", feature(core_intrinsics))]
@@ -20,20 +21,28 @@
 //! assert!(map.contains_key(&"b"));
 //! assert!(map.is_inline()); // Still stored inline
 //! ```
+//!
+//! # `no_std`
+//!
+//! Disable default features and enable an external hasher feature such as `fxhash`, or provide
+//! heap and inline hashers explicitly with [`SmallMap::with_hashers`]. Inline storage is
+//! allocation-free; spilling beyond the inline capacity requires `alloc`.
 
 use core::{
+    fmt::{self, Debug},
     hash::{BuildHasher, Hash},
     hint::unreachable_unchecked,
     iter::FusedIterator,
     ops::Index,
 };
-use std::{
-    collections::hash_map::RandomState,
-    fmt::{self, Debug},
-};
 
 use hashbrown::HashMap;
 use inline::Inline;
+
+#[cfg(feature = "std")]
+type DefaultHeapHasher = std::collections::hash_map::RandomState;
+#[cfg(not(feature = "std"))]
+type DefaultHeapHasher = hashbrown::DefaultHashBuilder;
 
 #[macro_use]
 mod macros;
@@ -105,7 +114,7 @@ type DefaultInlineHasher = core::hash::BuildHasherDefault<ahash::AHasher>;
     not(feature = "fxhash"),
     not(feature = "ahash")
 ))]
-type DefaultInlineHasher = RandomState;
+type DefaultInlineHasher = DefaultHeapHasher;
 
 /// Default threshold for switching from linear search to SIMD hash search.
 /// When `N` or `len` is less than this value, linear search is used.
@@ -125,18 +134,19 @@ pub const DEFAULT_LINEAR_THRESHOLD: usize = raw::Group::WIDTH;
 ///
 /// - `V`: Value type.
 ///
-/// - `SH`: Hasher for heap storage. Default: [`RandomState`]. This hasher is used when the map
-///   spills to heap. Note: The standard library's `RandomState` provides HashDoS resistance but is
-///   not the fastest option. Consider your security vs performance requirements - for
-///   non-adversarial workloads, faster alternatives like `rapidhash` or `fxhash` can improve
-///   performance significantly (though they are not cryptographically secure).
+/// - `SH`: Hasher for heap storage. Default: `RandomState` with `std`, otherwise
+///   `hashbrown::DefaultHashBuilder`. This hasher is used when the map spills to heap. Note: The
+///   standard library's `RandomState` provides HashDoS resistance but is not the fastest option.
+///   Consider your security vs performance requirements - for non-adversarial workloads, faster
+///   alternatives like `rapidhash` or `fxhash` can improve performance significantly (though they
+///   are not cryptographically secure). Without `std`, enable a hasher feature and use its type
+///   alias, or specify `SH` and `SI` explicitly and construct the map with [`SmallMap::with_hashers`].
 ///
 /// - `SI`: Hasher for inline storage. Default: `DefaultInlineHasher` (rapidhash if available,
-///   otherwise fxhash, ahash, or RandomState based on features). This hasher is used for
-///   SIMD-accelerated lookups in inline mode. Since inline storage only handles a small number of
-///   elements, HashDoS resistance is generally not a concern here - performance is the priority. We
-///   recommend using the default value and enabling the `rapidhash` or `fxhash` feature for best
-///   performance.
+///   otherwise fxhash, ahash, or the default heap hasher). This hasher is used for SIMD-accelerated
+///   lookups in inline mode. Since inline storage only handles a small number of elements, HashDoS
+///   resistance is generally not a concern here - performance is the priority. We recommend using
+///   the default value and enabling the `rapidhash` or `fxhash` feature for best performance.
 ///
 /// - `LINEAR_THRESHOLD`: Threshold for switching between linear and SIMD search. Default:
 ///   [`DEFAULT_LINEAR_THRESHOLD`] (equal to SIMD group width, typically 16 on SSE2). When `N <
@@ -177,7 +187,7 @@ pub enum SmallMap<
     const N: usize,
     K,
     V,
-    SH = RandomState,
+    SH = DefaultHeapHasher,
     SI = DefaultInlineHasher,
     const LINEAR_THRESHOLD: usize = DEFAULT_LINEAR_THRESHOLD,
 > {

@@ -25,6 +25,7 @@ rapidhash = { version = "4", default-features = false, optional = true }
 [dev-dependencies]
 rand = { version = "0.9" }
 criterion = { version = "0.8", features = ["html_reports"] }
+serde_json = "1"
 
 micromap = "0.1"
 tinymap = "0.4"
@@ -35,7 +36,8 @@ rustc-hash = { version = "2", features = ["std"] }
 pprof = { version = "0.15", features = ["flamegraph"] }
 
 [features]
-default = ["rapidhash", "fxhash", "inline-more"]
+default = ["std", "rapidhash", "fxhash", "inline-more"]
+std = []
 
 hashes = ["ahash", "fxhash", "rapidhash"]
 ahash = ["dep:ahash"]

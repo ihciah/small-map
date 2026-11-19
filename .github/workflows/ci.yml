@@ -67,6 +67,32 @@ jobs:
       - name: Run tests
         run: cross test --target ${{ matrix.target }} --features ahash
 
+  no-std:
+    name: no_std
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable with bare-metal target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7em-none-eabi
+
+      - name: Check minimal library without std
+        run: cargo check --lib --target thumbv7em-none-eabi --no-default-features
+
+      - name: Check external custom hashers without std
+        run: cargo check --manifest-path tests/no-std/Cargo.toml --target thumbv7em-none-eabi
+
+      - name: Check no_std hasher aliases
+        run: |
+          for hasher in fxhash rapidhash ahash; do
+            cargo check --manifest-path tests/no-std/Cargo.toml --target thumbv7em-none-eabi --features "$hasher"
+          done
+
+      - name: Check serde with external custom hashers
+        run: cargo check --manifest-path tests/no-std/Cargo.toml --target thumbv7em-none-eabi --features serde
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest

@@ -44,6 +44,37 @@ assert_eq!(set.len(), 2);
 
 SmallSet is implemented as a wrapper around SmallMap where the value is `()`, providing the same performance benefits for small collections of unique values.
 
+## `no_std` with `alloc`
+
+The `std` feature is enabled by default. To use SmallMap in a `no_std` crate, disable the default features and select an external hasher, for example:
+
+```toml
+[dependencies]
+small-map = { version = "0.1", default-features = false, features = ["fxhash"] }
+```
+
+The hasher-specific aliases are ready to use without `std`:
+
+```rust
+use small_map::{FxSmallMap, FxSmallSet};
+
+type Map<K, V> = FxSmallMap<16, K, V>;
+type Set<T> = FxSmallSet<16, T>;
+```
+
+The `rapidhash` and `ahash` features provide corresponding `RapidSmallMap`/`RapidSmallSet` and `ASmallMap`/`ASmallSet` aliases. To use another hasher, specify both `SH` (heap storage) and `SI` (inline storage), then construct the collection with `with_hashers` or `with_capacity_and_hashers`:
+
+```rust
+use small_map::SmallMap;
+
+type Map<K, V> = SmallMap<16, K, V, MyBuildHasher, MyBuildHasher>;
+let map = Map::<u32, u32>::with_hashers(MyBuildHasher, MyBuildHasher);
+```
+
+Inline storage does not allocate. Growing beyond `N` spills to a `hashbrown::HashMap` and requires `alloc`; a final `no_std` binary linking the allocation-backed paths must provide a global allocator.
+
+If you disable default features but want the previous std-based defaults, enable the `std` feature explicitly.
+
 ## Choosing N
 
 The choice of `N` involves a trade-off between inline storage benefits and struct size overhead:
