@@ -1,0 +1,20 @@
+[package]
+name = "small-map-no-std-smoke"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[features]
+default = []
+ahash = ["small-map/ahash"]
+fxhash = ["small-map/fxhash"]
+rapidhash = ["small-map/rapidhash"]
+serde = ["dep:serde", "small-map/serde"]
+
+[dependencies]
+small-map = { path = "../..", default-features = false }
+serde = { version = "1", default-features = false, optional = true }
+
+[workspace]
+# Keep target-specific features hostile: resolver v1 must not leak foldhash into MSP430.
+resolver = "1"

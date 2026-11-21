@@ -1,3 +1,4 @@
+#![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
 #![allow(clippy::manual_map)]
 #![cfg_attr(feature = "nightly", allow(internal_features))]
 #![cfg_attr(feature = "nightly", feature(core_intrinsics))]
@@ -20,20 +21,66 @@
 //! assert!(map.contains_key(&"b"));
 //! assert!(map.is_inline()); // Still stored inline
 //! ```
+//!
+//! # `no_std`
+//!
+//! Disable default features for `no_std` support. Collections use
+//! `foldhash::fast::RandomState` by default except on MSP430, where foldhash 0.2.0
+//! requires unavailable pointer-sized atomic loads/stores and a deterministic FNV-1a hasher is
+//! used instead. Enable an external hasher feature to use its type alias, or provide heap and
+//! inline hashers explicitly with [`SmallMap::with_hashers`]. Inline storage is allocation-free;
+//! spilling beyond the inline capacity requires `alloc`.
 
 use core::{
+    fmt::{self, Debug},
     hash::{BuildHasher, Hash},
     hint::unreachable_unchecked,
     iter::FusedIterator,
     ops::Index,
 };
-use std::{
-    collections::hash_map::RandomState,
-    fmt::{self, Debug},
-};
 
 use hashbrown::HashMap;
 use inline::Inline;
+
+// Mark the direct no_std dependency as used during std-only dependency lint builds.
+#[cfg(all(feature = "std", not(target_arch = "msp430")))]
+use foldhash as _;
+
+#[cfg(feature = "std")]
+type DefaultHeapHasher = std::collections::hash_map::RandomState;
+#[cfg(all(not(feature = "std"), not(target_arch = "msp430")))]
+type DefaultHeapHasher = foldhash::fast::RandomState;
+#[cfg(all(not(feature = "std"), target_arch = "msp430"))]
+type DefaultHeapHasher = core::hash::BuildHasherDefault<DeterministicHasher>;
+
+/// Deterministic fallback hasher for default `no_std` collections on MSP430.
+///
+/// This implements 64-bit FNV-1a. It is not randomized and does not provide HashDoS resistance.
+/// Use a custom hasher appropriate for the input if that is a concern.
+#[cfg(any(test, all(not(feature = "std"), target_arch = "msp430")))]
+#[derive(Clone, Debug)]
+pub struct DeterministicHasher(u64);
+
+#[cfg(any(test, all(not(feature = "std"), target_arch = "msp430")))]
+impl Default for DeterministicHasher {
+    fn default() -> Self {
+        Self(0xcbf29ce484222325)
+    }
+}
+
+#[cfg(any(test, all(not(feature = "std"), target_arch = "msp430")))]
+impl core::hash::Hasher for DeterministicHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 ^= u64::from(*byte);
+            self.0 = self.0.wrapping_mul(0x100000001b3);
+        }
+    }
+}
 
 #[macro_use]
 mod macros;
@@ -105,7 +152,7 @@ type DefaultInlineHasher = core::hash::BuildHasherDefault<ahash::AHasher>;
     not(feature = "fxhash"),
     not(feature = "ahash")
 ))]
-type DefaultInlineHasher = RandomState;
+type DefaultInlineHasher = DefaultHeapHasher;
 
 /// Default threshold for switching from linear search to SIMD hash search.
 /// When `N` or `len` is less than this value, linear search is used.
@@ -125,18 +172,21 @@ pub const DEFAULT_LINEAR_THRESHOLD: usize = raw::Group::WIDTH;
 ///
 /// - `V`: Value type.
 ///
-/// - `SH`: Hasher for heap storage. Default: [`RandomState`]. This hasher is used when the map
-///   spills to heap. Note: The standard library's `RandomState` provides HashDoS resistance but is
-///   not the fastest option. Consider your security vs performance requirements - for
-///   non-adversarial workloads, faster alternatives like `rapidhash` or `fxhash` can improve
-///   performance significantly (though they are not cryptographically secure).
+/// - `SH`: Hasher for heap storage. Default: `RandomState` with `std`, otherwise
+///   `foldhash::fast::RandomState`, except on MSP430 where a deterministic FNV-1a hasher is used.
+///   This hasher is used when the map spills to heap. Note: The standard library's `RandomState`
+///   provides HashDoS resistance but is not the fastest option. Consider your security vs
+///   performance requirements - for non-adversarial workloads, faster alternatives like `rapidhash`
+///   or `fxhash` can improve performance significantly (though they are not cryptographically
+///   secure). Without `std`, neither foldhash nor the deterministic fallback provides the same
+///   HashDoS resistance as `RandomState`. Enable a hasher feature and use its type alias, or specify
+///   `SH` and `SI` explicitly with [`SmallMap::with_hashers`] to choose different hashers.
 ///
 /// - `SI`: Hasher for inline storage. Default: `DefaultInlineHasher` (rapidhash if available,
-///   otherwise fxhash, ahash, or RandomState based on features). This hasher is used for
-///   SIMD-accelerated lookups in inline mode. Since inline storage only handles a small number of
-///   elements, HashDoS resistance is generally not a concern here - performance is the priority. We
-///   recommend using the default value and enabling the `rapidhash` or `fxhash` feature for best
-///   performance.
+///   otherwise fxhash, ahash, or the default heap hasher). This hasher is used for SIMD-accelerated
+///   lookups in inline mode. Since inline storage only handles a small number of elements, HashDoS
+///   resistance is generally not a concern here - performance is the priority. We recommend using
+///   the default value and enabling the `rapidhash` or `fxhash` feature for best performance.
 ///
 /// - `LINEAR_THRESHOLD`: Threshold for switching between linear and SIMD search. Default:
 ///   [`DEFAULT_LINEAR_THRESHOLD`] (equal to SIMD group width, typically 16 on SSE2). When `N <
@@ -177,7 +227,7 @@ pub enum SmallMap<
     const N: usize,
     K,
     V,
-    SH = RandomState,
+    SH = DefaultHeapHasher,
     SI = DefaultInlineHasher,
     const LINEAR_THRESHOLD: usize = DEFAULT_LINEAR_THRESHOLD,
 > {
@@ -1148,12 +1198,25 @@ where
 
 #[cfg(test)]
 mod tests {
+    use core::hash::{BuildHasher, BuildHasherDefault, Hasher};
     use std::{cell::RefCell, collections::hash_map::RandomState, rc::Rc};
 
     use hashbrown::HashMap;
     use rand::Rng;
 
-    use crate::SmallMap;
+    use crate::{DeterministicHasher, SmallMap};
+
+    #[test]
+    fn deterministic_hasher_fnv1a() {
+        let state = BuildHasherDefault::<DeterministicHasher>::default();
+        let mut first = state.build_hasher();
+        first.write(b"a");
+        assert_eq!(first.finish(), 0xaf63dc4c8601ec8c);
+
+        let mut second = state.build_hasher();
+        second.write(b"a");
+        assert_eq!(first.finish(), second.finish());
+    }
 
     #[test]
     fn basic_op() {
@@ -1992,6 +2055,8 @@ mod tests {
     fn default_hasher_types() {
         // Test with default hasher
         let mut map1: SmallMap<8, i32, i32> = SmallMap::new();
+        #[cfg(feature = "std")]
+        let _: &SmallMap<8, i32, i32, RandomState> = &map1;
         map1.insert(1, 10);
         assert_eq!(map1.get(&1), Some(&10));
 

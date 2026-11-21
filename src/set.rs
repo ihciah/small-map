@@ -1,13 +1,13 @@
 //! A small inline SIMD-accelerated hash set based on [`SmallMap`].
 
+use crate::{
+    DefaultHeapHasher, DefaultInlineHasher, Equivalent, SmallMap, DEFAULT_LINEAR_THRESHOLD,
+};
 use core::{
     fmt::{self, Debug},
     hash::{BuildHasher, Hash},
     iter::FusedIterator,
 };
-use std::collections::hash_map::RandomState;
-
-use crate::{DefaultInlineHasher, Equivalent, SmallMap, DEFAULT_LINEAR_THRESHOLD};
 
 /// A hash set implemented as a [`SmallMap`] where the value is `()`.
 ///
@@ -40,7 +40,10 @@ use crate::{DefaultInlineHasher, Equivalent, SmallMap, DEFAULT_LINEAR_THRESHOLD}
 ///
 /// - `T`: Element type. Must implement `Eq + Hash` for most operations.
 ///
-/// - `SH`: Hasher for heap storage. Default: [`RandomState`].
+/// - `SH`: Hasher for heap storage. Default: `RandomState` with `std`, otherwise
+///   `foldhash::fast::RandomState`, except on MSP430 where a deterministic FNV-1a
+///   hasher is used. Enable a hasher feature and use its type alias, or specify `SH` and `SI`
+///   explicitly with [`SmallSet::with_hashers`] to choose another hasher.
 ///
 /// - `SI`: Hasher for inline storage. Default: `DefaultInlineHasher`.
 ///
@@ -132,7 +135,7 @@ use crate::{DefaultInlineHasher, Equivalent, SmallMap, DEFAULT_LINEAR_THRESHOLD}
 pub struct SmallSet<
     const N: usize,
     T,
-    SH = RandomState,
+    SH = DefaultHeapHasher,
     SI = DefaultInlineHasher,
     const LINEAR_THRESHOLD: usize = DEFAULT_LINEAR_THRESHOLD,
 > {
@@ -228,7 +231,7 @@ impl<const N: usize, T, SH, SI, const LINEAR_THRESHOLD: usize>
     /// use small_map::SmallSet;
     ///
     /// let s = RandomState::default();
-    /// let mut set = SmallSet::<8, _>::with_hasher(s);
+    /// let mut set = SmallSet::<8, _, RandomState>::with_hasher(s);
     /// set.insert(1);
     /// ```
     #[inline]
@@ -255,8 +258,8 @@ impl<const N: usize, T, SH, SI, const LINEAR_THRESHOLD: usize>
     /// use small_map::SmallSet;
     ///
     /// let heap_hasher = RandomState::default();
-    /// let inline_hasher = rapidhash::fast::RandomState::default();
-    /// let mut set = SmallSet::<8, _>::with_hashers(heap_hasher, inline_hasher);
+    /// let inline_hasher = RandomState::default();
+    /// let mut set = SmallSet::<8, _, RandomState, RandomState>::with_hashers(heap_hasher, inline_hasher);
     /// set.insert(1);
     /// ```
     #[inline]
@@ -280,7 +283,7 @@ impl<const N: usize, T, SH, SI, const LINEAR_THRESHOLD: usize>
     /// use small_map::SmallSet;
     ///
     /// let s = RandomState::default();
-    /// let mut set = SmallSet::<8, _>::with_capacity_and_hasher(10, s);
+    /// let mut set = SmallSet::<8, _, RandomState>::with_capacity_and_hasher(10, s);
     /// set.insert(1);
     /// ```
     #[inline]
@@ -307,8 +310,12 @@ impl<const N: usize, T, SH, SI, const LINEAR_THRESHOLD: usize>
     /// use small_map::SmallSet;
     ///
     /// let heap_hasher = RandomState::default();
-    /// let inline_hasher = rapidhash::fast::RandomState::default();
-    /// let mut set = SmallSet::<8, _>::with_capacity_and_hashers(10, heap_hasher, inline_hasher);
+    /// let inline_hasher = RandomState::default();
+    /// let mut set = SmallSet::<8, _, RandomState, RandomState>::with_capacity_and_hashers(
+    ///     10,
+    ///     heap_hasher,
+    ///     inline_hasher,
+    /// );
     /// set.insert(1);
     /// ```
     #[inline]
@@ -746,17 +753,17 @@ mod tests {
         assert!(set.is_empty());
         assert!(set.is_inline());
 
-        assert_eq!(set.insert(1), true);
-        assert_eq!(set.insert(2), true);
-        assert_eq!(set.insert(1), false); // Duplicate
+        assert!(set.insert(1));
+        assert!(set.insert(2));
+        assert!(!set.insert(1)); // Duplicate
 
         assert_eq!(set.len(), 2);
         assert!(set.contains(&1));
         assert!(set.contains(&2));
         assert!(!set.contains(&3));
 
-        assert_eq!(set.remove(&1), true);
-        assert_eq!(set.remove(&1), false);
+        assert!(set.remove(&1));
+        assert!(!set.remove(&1));
         assert_eq!(set.len(), 1);
     }
 
