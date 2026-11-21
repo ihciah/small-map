@@ -540,8 +540,8 @@ where
         if N < LINEAR_THRESHOLD {
             // Small N: use linear search, no hash needed
             let len = self.raw.len;
-            for i in 0..len {
-                let item = unsafe { self.raw.data[i].assume_init_mut() };
+            for item in self.raw.data.iter_mut().take(len) {
+                let item = unsafe { item.assume_init_mut() };
                 if k.equivalent(&item.0) {
                     return Some(mem::replace(&mut item.1, v));
                 }
