@@ -109,7 +109,9 @@ type DefaultInlineHasher = RandomState;
 
 /// Default threshold for switching from linear search to SIMD hash search.
 /// When `N` or `len` is less than this value, linear search is used.
-/// Equal to the SIMD group width (16 on SSE2, 8 on NEON/generic).
+/// Equal to the SIMD group width (16 on SSE2, 8 on NEON; the generic backend
+/// uses u64 (width 8) for 64-bit pointers or aarch64/x86_64/wasm32, and u32
+/// (width 4) otherwise).
 pub const DEFAULT_LINEAR_THRESHOLD: usize = raw::Group::WIDTH;
 
 /// A hybrid map that stores data inline when small, and spills to heap when it grows.
@@ -2076,8 +2078,8 @@ mod tests {
     #[test]
     fn test_inline_insert_unique_hash_consistency() {
         // N=8, LINEAR_THRESHOLD=4
-        // Group::WIDTH = 16 (SSE2) or 8 (NEON) or 8 (Generic).
-        // If Group::WIDTH == 16, N <= Group::WIDTH (8 <= 16) is True.
+        // Group::WIDTH = 16 (SSE2), 8 (NEON/u64 generic), or 4 (u32 generic).
+        // If Group::WIDTH >= 8, N <= Group::WIDTH (8 <= 16 or 8 <= 8) is True.
         // N < LINEAR_THRESHOLD (8 < 4) is False.
         // MIN_LINEAR_LEN = 4.
 
@@ -2101,10 +2103,11 @@ mod tests {
         // If insert_unique_unchecked skipped hash updates (because N <= Group::WIDTH),
         // SIMD search will fail to find keys (hashes are 0/garbage).
 
-        // If Group::WIDTH is 8 (Generic/Neon), then N <= Group::WIDTH (8<=8) is True.
+        // If Group::WIDTH is 8 (NEON/u64 generic), N <= Group::WIDTH (8<=8) is True.
         // So the bug exists there too.
 
-        // Only if Group::WIDTH < 8 (impossible) would the bug be hidden.
+        // The bug is hidden only where Group::WIDTH < 8, i.e. WIDTH=4 (u32 generic),
+        // where N=8 > Group::WIDTH.
 
         assert_eq!(map.get(&1), Some(&10), "Failed to find 1");
         assert_eq!(map.get(&5), Some(&50), "Failed to find 5");
